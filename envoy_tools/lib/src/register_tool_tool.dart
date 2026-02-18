@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:envoy/envoy.dart';
@@ -6,37 +7,44 @@ import 'package:path/path.dart' as p;
 import 'dynamic_tool.dart';
 import 'tool_runner.dart';
 
+/// Called after `dart analyze` passes, before the tool is registered.
+///
+/// Receives the tool [name], its declared [permission], and the analyzed
+/// [code]. Return `true` to allow registration, `false` to block it.
+///
+/// Use this as a human-in-the-loop approval gate: show the code, prompt
+/// for confirmation, and return the user's decision.
+typedef OnToolRegister = FutureOr<bool> Function(
+  String name,
+  ToolPermission permission,
+  String code,
+);
+
 /// Registers a new tool at runtime by writing and analyzing a Dart script.
 ///
 /// When called, the agent supplies a complete Dart implementation. This tool:
-/// 1. Initializes the tool runner project (idempotent — `dart pub get` runs once)
-/// 2. Writes the code to `<workspace>/.envoy/tools/<name>.dart`
+/// 1. Initializes the per-tier runner project (idempotent — runs once per tier)
+/// 2. Writes the code to `<workspace>/.envoy/runners/<tier>/tools/<name>.dart`
 /// 3. Runs `dart analyze` — errors block registration, warnings pass
-/// 4. Creates a [DynamicTool] and calls [onRegister]
+/// 4. Calls [onToolRegister] if set — returning `false` blocks registration
+/// 5. Creates a [DynamicTool] and calls [onRegister]
 ///
-/// ## Dynamic tool contract
+/// ## Package grants by permission tier
 ///
-/// The script runs inside the tool runner project, so it can import:
-/// - Any `dart:` core library
-/// - `package:http` — HTTP client
-/// - `package:path` — path manipulation
+/// | Tier        | Available packages      |
+/// |-------------|-------------------------|
+/// | compute     | dart: core only         |
+/// | readFile    | + package:path          |
+/// | writeFile   | + package:path          |
+/// | network     | + package:http + path   |
+/// | process     | + package:http + path   |
 ///
-/// Required I/O:
+/// ## Dynamic tool I/O contract
+///
 /// - Read JSON input from `args[0]`
 /// - Print `{"success": true, "output": "..."}` or
 ///   `{"success": false, "error": "..."}` to stdout
-///
-/// ```dart
-/// import 'dart:convert';
-/// import 'package:http/http.dart' as http;
-///
-/// Future<void> main(List<String> args) async {
-///   final input = jsonDecode(args[0]) as Map<String, dynamic>;
-///   final url = input['url'] as String;
-///   final response = await http.get(Uri.parse(url));
-///   print(jsonEncode({'success': true, 'output': response.body}));
-/// }
-/// ```
+/// - `main()` may be `async`
 class RegisterToolTool extends Tool {
   final String workspaceRoot;
 
@@ -45,7 +53,18 @@ class RegisterToolTool extends Tool {
   /// Pass `agent.registerTool` to wire this directly into the agent loop.
   final void Function(Tool) onRegister;
 
-  RegisterToolTool(this.workspaceRoot, {required this.onRegister});
+  /// Optional human-in-the-loop review gate.
+  ///
+  /// Called after `dart analyze` passes, before the tool is registered.
+  /// Return `true` to allow, `false` to block. If null, all analyzed tools
+  /// are registered automatically.
+  final OnToolRegister? onToolRegister;
+
+  RegisterToolTool(
+    this.workspaceRoot, {
+    required this.onRegister,
+    this.onToolRegister,
+  });
 
   @override
   String get name => 'register_tool';
@@ -54,7 +73,9 @@ class RegisterToolTool extends Tool {
   String get description =>
       'Register a new tool by supplying its Dart implementation. '
       'The code is analyzed with `dart analyze` before registration. '
-      'Available imports: dart: core libs, package:http (HTTP client), package:path. '
+      'Available packages depend on the declared permission tier: '
+      'compute=dart:core only; readFile/writeFile=+package:path; '
+      'network/process=+package:http+path. '
       'Contract: read JSON input from args[0]; print '
       '{"success": true, "output": "..."} or {"success": false, "error": "..."} to stdout. '
       'main() may be async.';
@@ -80,7 +101,9 @@ class RegisterToolTool extends Tool {
               'network',
               'process',
             ],
-            'description': 'Permission tier required by the tool',
+            'description':
+                'Permission tier. Determines available packages: '
+                'compute=dart:core; readFile/writeFile=+path; network/process=+http+path.',
           },
           'inputSchema': {
             'type': 'object',
@@ -90,7 +113,8 @@ class RegisterToolTool extends Tool {
           'code': {
             'type': 'string',
             'description':
-                'Complete Dart source. May use dart: core libs, package:http, package:path. '
+                'Complete Dart source. May use dart: core libs and packages '
+                'allowed by the declared permission tier. '
                 'Read input from args[0] (JSON string); print JSON result to stdout. '
                 'main() may be async.',
           },
@@ -139,14 +163,14 @@ class RegisterToolTool extends Tool {
       );
     }
 
-    // Ensure the tool runner project exists and has packages resolved.
-    final runnerError = await ToolRunner.ensure(workspaceRoot);
+    // Initialize the tier-appropriate runner project (idempotent).
+    final runnerError = await ToolRunner.ensure(workspaceRoot, permission);
     if (runnerError != null) {
       return ToolResult.err('runner init failed: $runnerError');
     }
 
-    // Write to <workspace>/.envoy/tools/<name>.dart
-    final toolsDir = Directory(p.join(workspaceRoot, '.envoy', 'tools'));
+    // Write to the tier-specific tools directory.
+    final toolsDir = Directory(ToolRunner.toolsDir(workspaceRoot, permission));
     await toolsDir.create(recursive: true);
     final scriptFile = File(p.join(toolsDir.path, '$name.dart'));
     await scriptFile.writeAsString(code);
@@ -159,7 +183,16 @@ class RegisterToolTool extends Tool {
       return ToolResult.err('dart analyze failed:\n$output');
     }
 
-    // Register
+    // Human-in-the-loop review gate (optional).
+    if (onToolRegister != null) {
+      final allowed = await onToolRegister!(name, permission, code);
+      if (!allowed) {
+        await scriptFile.delete();
+        return ToolResult.err('Tool "$name" registration blocked by review gate.');
+      }
+    }
+
+    // Register.
     final tool = DynamicTool(
       name: name,
       description: description,

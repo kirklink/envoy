@@ -182,15 +182,14 @@ void main(List<String> args) {
       expect(callResult.output, 'olleh');
     });
 
-    test('registered tool can use package: imports', () async {
+    test('readFile-tier tool can use package:path', () async {
       final registered = <Tool>[];
       final tool = RegisterToolTool(tempDir.path, onRegister: registered.add);
 
-      // Uses package:path — available in the runner project.
       final result = await tool.execute({
         'name': 'join_paths',
         'description': 'Joins two path segments.',
-        'permission': 'compute',
+        'permission': 'readFile', // readFile tier includes package:path
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -215,6 +214,75 @@ void main(List<String> args) {
       final callResult = await registered.first.execute({'a': 'foo', 'b': 'bar.txt'});
       expect(callResult.success, isTrue);
       expect(callResult.output, contains('bar.txt'));
+    });
+
+    test('compute-tier tool cannot use package:path (tier enforcement)', () async {
+      final tool = RegisterToolTool(tempDir.path, onRegister: (_) {});
+
+      // package:path is not in the compute runner — dart analyze should reject it.
+      final result = await tool.execute({
+        'name': 'bad_compute_tool',
+        'description': 'Tries to use package:path from compute tier.',
+        'permission': 'compute',
+        'inputSchema': {'type': 'object'},
+        'code': r"""
+import 'dart:convert';
+import 'package:path/path.dart' as p;
+
+void main(List<String> args) {
+  print(jsonEncode({'success': true, 'output': p.join('a', 'b')}));
+}
+""",
+      });
+
+      expect(result.success, isFalse,
+          reason: 'compute tier should not have package:path');
+    });
+
+    test('onToolRegister callback can block registration', () async {
+      final registered = <Tool>[];
+      final tool = RegisterToolTool(
+        tempDir.path,
+        onRegister: registered.add,
+        onToolRegister: (name, permission, code) => false, // always deny
+      );
+
+      final result = await tool.execute({
+        'name': 'vetoed_tool',
+        'description': 'This will be blocked.',
+        'permission': 'compute',
+        'inputSchema': {'type': 'object'},
+        'code': "import 'dart:convert';\nvoid main(List<String> args) { print(jsonEncode({'success': true, 'output': 'ok'})); }",
+      });
+
+      expect(result.success, isFalse);
+      expect(result.error, contains('blocked'));
+      expect(registered, isEmpty);
+    });
+
+    test('onToolRegister callback can allow registration', () async {
+      final reviewed = <String>[];
+      final registered = <Tool>[];
+      final tool = RegisterToolTool(
+        tempDir.path,
+        onRegister: registered.add,
+        onToolRegister: (name, permission, code) {
+          reviewed.add(name);
+          return true; // approve
+        },
+      );
+
+      final result = await tool.execute({
+        'name': 'approved_tool',
+        'description': 'This will be approved.',
+        'permission': 'compute',
+        'inputSchema': {'type': 'object'},
+        'code': "import 'dart:convert';\nvoid main(List<String> args) { print(jsonEncode({'success': true, 'output': 'ok'})); }",
+      });
+
+      expect(result.success, isTrue, reason: result.error);
+      expect(reviewed, contains('approved_tool'));
+      expect(registered.length, 1);
     });
 
     test('rejects code that fails dart analyze', () async {

@@ -68,22 +68,31 @@ Permission tiers: `compute < readFile < writeFile < network < process`
 
 `RegisterToolTool` + `DynamicTool` implement the self-extension mechanic:
 
-1. Agent calls `register_tool` with Dart source implementing the I/O contract
-2. Code written to `<workspace>/.envoy/tools/<name>.dart`
-3. `dart analyze` runs — errors block registration, warnings pass
-4. `DynamicTool` wraps the script path + schema and is added to the live tool map
-5. LLM can call the new tool on the very next iteration
+1. Agent calls `register_tool` with Dart source and a declared permission tier
+2. `ToolRunner.ensure()` initializes the tier-specific runner project (idempotent)
+3. Code written to `<workspace>/.envoy/runners/<tier>/tools/<name>.dart`
+4. `dart analyze` runs — errors block registration, warnings pass
+5. `onToolRegister` callback fires if set — human can review code and approve/deny
+6. `DynamicTool` wraps the script path + schema and is added to the live tool map
+7. LLM can call the new tool on the very next iteration
 
 **Dynamic tool I/O contract** (script must follow):
 - Receive JSON-encoded input as `args[0]`
 - Print `{"success": true, "output": "..."}` or `{"success": false, "error": "..."}` to stdout
 - `main()` may be `async`
 
-**Available imports**: `dart:` core libs + `package:http` + `package:path`
+**Available packages by permission tier** (enforced — tools literally can't import beyond their tier):
 
-The tool runner project at `<workspace>/.envoy/` is initialized lazily by `RegisterToolTool`
-(`dart pub get` runs once). `dart run` finds it by walking up from `.envoy/tools/`,
-giving scripts access to the runner's `pubspec.yaml` dependencies.
+| Tier        | Available packages       |
+|-------------|--------------------------|
+| `compute`   | `dart:` core only        |
+| `readFile`  | + `package:path`         |
+| `writeFile` | + `package:path`         |
+| `network`   | + `package:http` + path  |
+| `process`   | + `package:http` + path  |
+
+Runner projects live at `<workspace>/.envoy/runners/<tier>/`. Each has its own
+`pubspec.yaml` and `.dart_tool/`. `dart pub get` runs once per tier, lazily.
 
 ## Key Files
 
@@ -158,9 +167,18 @@ final agent = EnvoyAgent(
   tools: EnvoyTools.defaults(workspaceRoot),
 );
 
-// Wire register_tool into the agent's own tool map
+// Wire register_tool — with optional human review gate
 agent.registerTool(
-  RegisterToolTool(workspaceRoot, onRegister: agent.registerTool),
+  RegisterToolTool(
+    workspaceRoot,
+    onRegister: agent.registerTool,
+    onToolRegister: (name, permission, code) async {
+      // Show code to user, return true to allow or false to block
+      print('Agent wants to register "$name" (${permission.name} tier):\n$code');
+      stdout.write('Allow? [y/N] ');
+      return stdin.readLineSync()?.toLowerCase() == 'y';
+    },
+  ),
 );
 
 // Now the agent can write and register new tools itself
@@ -201,9 +219,10 @@ class MyTool extends Tool {
 - **`_tools` is mutated in place**: `registerTool()` adds to the map; `_toolSchemas()`
   reads it each iteration. No restart needed — tools registered mid-run are live immediately.
 
-- **`dart analyze` with runner pubspec**: `RegisterToolTool` initializes the runner project
-  at `<workspace>/.envoy/` first, so `dart analyze` finds the `pubspec.yaml` and resolves
-  `package:` imports correctly. Exit code 0 = clean; non-zero = blocked.
+- **Per-tier runner projects**: `ToolRunner.ensure(root, permission)` creates a separate
+  Dart project per tier under `<workspace>/.envoy/runners/<tier>/`. `dart analyze` and
+  `dart run` both walk up to find that tier's `pubspec.yaml`, so package availability is
+  structurally enforced — a `compute` tool literally cannot resolve `package:http`.
 
 - **Dynamic tool args limit**: JSON input is passed as `args[0]`. Works for typical inputs;
   large payloads may hit OS argument-length limits. See open question #7 in `agent_plan.md`.
