@@ -33,6 +33,16 @@ class EnvoyConfig {
   });
 }
 
+/// Signature for the tool-call observer callback.
+///
+/// Called after each tool execution with the tool [name], the [input] map
+/// the model supplied, and the [result] returned by the tool.
+typedef OnToolCall = void Function(
+  String name,
+  Map<String, dynamic> input,
+  ToolResult result,
+);
+
 /// The core Envoy agent.
 ///
 /// Runs the LLM ↔ tool loop until the model returns a plain text response
@@ -45,10 +55,17 @@ class EnvoyAgent {
   final EnvoyContext _context;
   final Map<String, Tool> _tools;
 
+  /// Optional observer called after every tool execution.
+  ///
+  /// Useful for logging, progress indicators, or debugging. The callback
+  /// receives the tool name, the input the model supplied, and the result.
+  final OnToolCall? onToolCall;
+
   EnvoyAgent(
     this.config, {
     List<Tool> tools = const [],
     EnvoyContext? context,
+    this.onToolCall,
   })  : _client = anthropic.AnthropicClient(apiKey: config.apiKey),
         _context = context ?? EnvoyContext(maxTokens: config.maxTokens),
         _tools = {for (final t in tools) t.name: t};
@@ -88,6 +105,7 @@ class EnvoyAgent {
         }
 
         final result = await tool.execute(toolUse.input);
+        onToolCall?.call(toolUse.name, toolUse.input, result);
         _context.addToolResult(
           toolUse.id,
           result.success ? result.output : (result.error ?? 'unknown error'),
