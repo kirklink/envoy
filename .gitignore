@@ -8,3 +8,10 @@ doc/api/
 *.js.map
 *.js.deps
 *.js.info
+
+# Secrets
+.env
+
+
+
+.temp/
