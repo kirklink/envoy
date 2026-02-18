@@ -139,6 +139,131 @@ void main() {
     });
   });
 
+  // ── RegisterToolTool ───────────────────────────────────────────────────────
+
+  group('RegisterToolTool', () {
+    test('registers a valid tool and it becomes callable', () async {
+      final registered = <Tool>[];
+      final tool = RegisterToolTool(
+        tempDir.path,
+        onRegister: registered.add,
+      );
+
+      final result = await tool.execute({
+        'name': 'reverse_string',
+        'description': 'Reverses a string.',
+        'permission': 'compute',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'text': {'type': 'string'},
+          },
+          'required': ['text'],
+        },
+        'code': '''
+import 'dart:convert';
+
+void main(List<String> args) {
+  final input = jsonDecode(args[0]) as Map<String, dynamic>;
+  final text = input['text'] as String;
+  final reversed = text.split('').reversed.join();
+  print(jsonEncode({'success': true, 'output': reversed}));
+}
+''',
+      });
+
+      expect(result.success, isTrue, reason: result.error);
+      expect(registered.length, 1);
+      expect(registered.first.name, 'reverse_string');
+
+      // Execute the registered tool
+      final callResult = await registered.first.execute({'text': 'hello'});
+      expect(callResult.success, isTrue);
+      expect(callResult.output, 'olleh');
+    });
+
+    test('rejects code that fails dart analyze', () async {
+      final tool = RegisterToolTool(tempDir.path, onRegister: (_) {});
+
+      final result = await tool.execute({
+        'name': 'broken_tool',
+        'description': 'This will fail analysis.',
+        'permission': 'compute',
+        'inputSchema': {'type': 'object'},
+        'code': 'void main() { int x = "not an int"; }',
+      });
+
+      expect(result.success, isFalse);
+      expect(result.error, contains('dart analyze'));
+    });
+
+    test('rejects unknown permission', () async {
+      final tool = RegisterToolTool(tempDir.path, onRegister: (_) {});
+
+      final result = await tool.execute({
+        'name': 'bad',
+        'description': 'test',
+        'permission': 'superuser',
+        'inputSchema': {'type': 'object'},
+        'code': 'void main() {}',
+      });
+
+      expect(result.success, isFalse);
+      expect(result.error, contains('unknown permission'));
+    });
+
+    test('has correct permission tier', () {
+      expect(
+        RegisterToolTool('/', onRegister: (_) {}).permission,
+        ToolPermission.process,
+      );
+    });
+  });
+
+  // ── DynamicTool ────────────────────────────────────────────────────────────
+
+  group('DynamicTool', () {
+    test('executes a script and returns output', () async {
+      final script = File(p.join(tempDir.path, 'echo_tool.dart'));
+      await script.writeAsString('''
+import 'dart:convert';
+
+void main(List<String> args) {
+  final input = jsonDecode(args[0]) as Map<String, dynamic>;
+  print(jsonEncode({'success': true, 'output': 'got: \${input['msg']}'}));
+}
+''');
+
+      final tool = DynamicTool(
+        name: 'echo',
+        description: 'echoes input',
+        inputSchema: const {'type': 'object'},
+        permission: ToolPermission.compute,
+        scriptPath: script.path,
+      );
+
+      final result = await tool.execute({'msg': 'ping'});
+      expect(result.success, isTrue);
+      expect(result.output, 'got: ping');
+    });
+
+    test('returns error on non-zero exit', () async {
+      final script = File(p.join(tempDir.path, 'fail_tool.dart'));
+      await script.writeAsString('void main() { throw Exception("boom"); }');
+
+      final tool = DynamicTool(
+        name: 'fail',
+        description: 'always fails',
+        inputSchema: const {'type': 'object'},
+        permission: ToolPermission.compute,
+        scriptPath: script.path,
+      );
+
+      final result = await tool.execute({});
+      expect(result.success, isFalse);
+    });
+  });
+
   // ── EnvoyTools factory ─────────────────────────────────────────────────────
 
   group('EnvoyTools', () {

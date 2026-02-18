@@ -70,6 +70,15 @@ class EnvoyAgent {
         _context = context ?? EnvoyContext(maxTokens: config.maxTokens),
         _tools = {for (final t in tools) t.name: t};
 
+  /// Registers or replaces a tool at runtime.
+  ///
+  /// Allows tools to be added after construction — the agent loop reads the
+  /// tool map fresh on every iteration, so newly registered tools are
+  /// immediately available to the LLM on the next call.
+  ///
+  /// Pass this method as the `onRegister` callback to [RegisterToolTool].
+  void registerTool(Tool tool) => _tools[tool.name] = tool;
+
   /// Executes [task], running the agent loop until a text response is produced.
   ///
   /// Returns the final text response from the model.
