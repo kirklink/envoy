@@ -1,0 +1,11 @@
+name: envoy_tools
+homepage: "https://github.com/kirklink/envoy"
+description: 'Seed tool library for the Envoy agent framework.'
+version: 0.1.0
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+dependencies:
+  envoy:
+    path: ../envoy
+dev_dependencies:
+  test: ^1.25.0

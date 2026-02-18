@@ -1,0 +1,10 @@
+# Dart
+.dart_tool/
+.packages
+build/
+pubspec.lock
+doc/api/
+*.js
+*.js.map
+*.js.deps
+*.js.info
