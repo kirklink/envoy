@@ -4,28 +4,37 @@ import 'package:envoy/envoy.dart';
 import 'package:path/path.dart' as p;
 
 import 'dynamic_tool.dart';
+import 'tool_runner.dart';
 
 /// Registers a new tool at runtime by writing and analyzing a Dart script.
 ///
 /// When called, the agent supplies a complete Dart implementation. This tool:
-/// 1. Writes the code to `<workspace>/.envoy/tools/<name>.dart`
-/// 2. Runs `dart analyze` — errors block registration
-/// 3. Creates a [DynamicTool] and calls [onRegister]
+/// 1. Initializes the tool runner project (idempotent — `dart pub get` runs once)
+/// 2. Writes the code to `<workspace>/.envoy/tools/<name>.dart`
+/// 3. Runs `dart analyze` — errors block registration, warnings pass
+/// 4. Creates a [DynamicTool] and calls [onRegister]
 ///
 /// ## Dynamic tool contract
 ///
-/// The script must use only `dart:` core libraries and implement:
+/// The script runs inside the tool runner project, so it can import:
+/// - Any `dart:` core library
+/// - `package:http` — HTTP client
+/// - `package:path` — path manipulation
+///
+/// Required I/O:
 /// - Read JSON input from `args[0]`
-/// - Write `{"success": true, "output": "..."}` or
+/// - Print `{"success": true, "output": "..."}` or
 ///   `{"success": false, "error": "..."}` to stdout
 ///
 /// ```dart
 /// import 'dart:convert';
+/// import 'package:http/http.dart' as http;
 ///
-/// void main(List<String> args) {
+/// Future<void> main(List<String> args) async {
 ///   final input = jsonDecode(args[0]) as Map<String, dynamic>;
-///   // ... do work ...
-///   print(jsonEncode({'success': true, 'output': 'result'}));
+///   final url = input['url'] as String;
+///   final response = await http.get(Uri.parse(url));
+///   print(jsonEncode({'success': true, 'output': response.body}));
 /// }
 /// ```
 class RegisterToolTool extends Tool {
@@ -45,9 +54,10 @@ class RegisterToolTool extends Tool {
   String get description =>
       'Register a new tool by supplying its Dart implementation. '
       'The code is analyzed with `dart analyze` before registration. '
-      'Only dart: core libraries are available — no package: imports. '
-      'Contract: read JSON input from args[0]; write '
-      '{"success": true, "output": "..."} or {"success": false, "error": "..."} to stdout.';
+      'Available imports: dart: core libs, package:http (HTTP client), package:path. '
+      'Contract: read JSON input from args[0]; print '
+      '{"success": true, "output": "..."} or {"success": false, "error": "..."} to stdout. '
+      'main() may be async.';
 
   @override
   Map<String, dynamic> get inputSchema => {
@@ -80,8 +90,9 @@ class RegisterToolTool extends Tool {
           'code': {
             'type': 'string',
             'description':
-                'Complete Dart source. Must import only dart: core libs. '
-                'Read input from args[0] (JSON string); print JSON result to stdout.',
+                'Complete Dart source. May use dart: core libs, package:http, package:path. '
+                'Read input from args[0] (JSON string); print JSON result to stdout. '
+                'main() may be async.',
           },
         },
         'required': [
@@ -126,6 +137,12 @@ class RegisterToolTool extends Tool {
         'unknown permission "$permissionStr"; '
         'valid: compute, readFile, writeFile, network, process',
       );
+    }
+
+    // Ensure the tool runner project exists and has packages resolved.
+    final runnerError = await ToolRunner.ensure(workspaceRoot);
+    if (runnerError != null) {
+      return ToolResult.err('runner init failed: $runnerError');
     }
 
     // Write to <workspace>/.envoy/tools/<name>.dart

@@ -182,6 +182,41 @@ void main(List<String> args) {
       expect(callResult.output, 'olleh');
     });
 
+    test('registered tool can use package: imports', () async {
+      final registered = <Tool>[];
+      final tool = RegisterToolTool(tempDir.path, onRegister: registered.add);
+
+      // Uses package:path — available in the runner project.
+      final result = await tool.execute({
+        'name': 'join_paths',
+        'description': 'Joins two path segments.',
+        'permission': 'compute',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'a': {'type': 'string'},
+            'b': {'type': 'string'},
+          },
+          'required': ['a', 'b'],
+        },
+        'code': r"""
+import 'dart:convert';
+import 'package:path/path.dart' as p;
+
+void main(List<String> args) {
+  final input = jsonDecode(args[0]) as Map<String, dynamic>;
+  final joined = p.join(input['a'] as String, input['b'] as String);
+  print(jsonEncode({'success': true, 'output': joined}));
+}
+""",
+      });
+
+      expect(result.success, isTrue, reason: result.error);
+      final callResult = await registered.first.execute({'a': 'foo', 'b': 'bar.txt'});
+      expect(callResult.success, isTrue);
+      expect(callResult.output, contains('bar.txt'));
+    });
+
     test('rejects code that fails dart analyze', () async {
       final tool = RegisterToolTool(tempDir.path, onRegister: (_) {});
 

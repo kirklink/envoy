@@ -77,7 +77,13 @@ Permission tiers: `compute < readFile < writeFile < network < process`
 **Dynamic tool I/O contract** (script must follow):
 - Receive JSON-encoded input as `args[0]`
 - Print `{"success": true, "output": "..."}` or `{"success": false, "error": "..."}` to stdout
-- Only `dart:` core libraries available (no `package:` imports)
+- `main()` may be `async`
+
+**Available imports**: `dart:` core libs + `package:http` + `package:path`
+
+The tool runner project at `<workspace>/.envoy/` is initialized lazily by `RegisterToolTool`
+(`dart pub get` runs once). `dart run` finds it by walking up from `.envoy/tools/`,
+giving scripts access to the runner's `pubspec.yaml` dependencies.
 
 ## Key Files
 
@@ -195,8 +201,9 @@ class MyTool extends Tool {
 - **`_tools` is mutated in place**: `registerTool()` adds to the map; `_toolSchemas()`
   reads it each iteration. No restart needed — tools registered mid-run are live immediately.
 
-- **`dart analyze` without pubspec**: `RegisterToolTool` runs `dart analyze` on a standalone
-  file. This works for `dart:` core libs. Exit code 0 = clean; non-zero = blocked.
+- **`dart analyze` with runner pubspec**: `RegisterToolTool` initializes the runner project
+  at `<workspace>/.envoy/` first, so `dart analyze` finds the `pubspec.yaml` and resolves
+  `package:` imports correctly. Exit code 0 = clean; non-zero = blocked.
 
 - **Dynamic tool args limit**: JSON input is passed as `args[0]`. Works for typical inputs;
   large payloads may hit OS argument-length limits. See open question #7 in `agent_plan.md`.
