@@ -1,9 +1,161 @@
+import 'dart:io';
+
+import 'package:envoy/envoy.dart';
+import 'package:envoy_tools/envoy_tools.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
-  group('envoy_tools', () {
-    test('placeholder', () {
-      expect(true, isTrue);
+  late Directory tempDir;
+
+  setUp(() async {
+    tempDir = await Directory.systemTemp.createTemp('envoy_tools_test_');
+  });
+
+  tearDown(() async {
+    await tempDir.delete(recursive: true);
+  });
+
+  // ── ReadFileTool ───────────────────────────────────────────────────────────
+
+  group('ReadFileTool', () {
+    test('reads an existing file', () async {
+      final file = File(p.join(tempDir.path, 'hello.txt'));
+      await file.writeAsString('hello world');
+
+      final tool = ReadFileTool(tempDir.path);
+      final result = await tool.execute({'path': 'hello.txt'});
+
+      expect(result.success, isTrue);
+      expect(result.output, 'hello world');
+    });
+
+    test('returns error for missing file', () async {
+      final tool = ReadFileTool(tempDir.path);
+      final result = await tool.execute({'path': 'nope.txt'});
+      expect(result.success, isFalse);
+    });
+
+    test('rejects path traversal', () async {
+      final tool = ReadFileTool(tempDir.path);
+      final result = await tool.execute({'path': '../../etc/passwd'});
+      expect(result.success, isFalse);
+      expect(result.error, contains('escapes workspace'));
+    });
+
+    test('returns error when path is missing', () async {
+      final tool = ReadFileTool(tempDir.path);
+      final result = await tool.execute({});
+      expect(result.success, isFalse);
+    });
+
+    test('has correct permission tier', () {
+      expect(ReadFileTool('/').permission, ToolPermission.readFile);
+    });
+  });
+
+  // ── WriteFileTool ──────────────────────────────────────────────────────────
+
+  group('WriteFileTool', () {
+    test('writes a file', () async {
+      final tool = WriteFileTool(tempDir.path);
+      final result = await tool.execute({
+        'path': 'output.txt',
+        'content': 'test content',
+      });
+
+      expect(result.success, isTrue);
+      final written = await File(p.join(tempDir.path, 'output.txt')).readAsString();
+      expect(written, 'test content');
+    });
+
+    test('creates parent directories', () async {
+      final tool = WriteFileTool(tempDir.path);
+      final result = await tool.execute({
+        'path': 'a/b/c.txt',
+        'content': 'nested',
+      });
+
+      expect(result.success, isTrue);
+      final exists = await File(p.join(tempDir.path, 'a/b/c.txt')).exists();
+      expect(exists, isTrue);
+    });
+
+    test('rejects path traversal', () async {
+      final tool = WriteFileTool(tempDir.path);
+      final result = await tool.execute({
+        'path': '../../evil.txt',
+        'content': 'bad',
+      });
+      expect(result.success, isFalse);
+      expect(result.error, contains('escapes workspace'));
+    });
+
+    test('has correct permission tier', () {
+      expect(WriteFileTool('/').permission, ToolPermission.writeFile);
+    });
+  });
+
+  // ── RunDartTool ────────────────────────────────────────────────────────────
+
+  group('RunDartTool', () {
+    test('executes inline code and returns stdout', () async {
+      final tool = RunDartTool(tempDir.path);
+      final result = await tool.execute({
+        'code': "void main() { print('dart works'); }",
+      });
+
+      expect(result.success, isTrue);
+      expect(result.output, contains('dart works'));
+    });
+
+    test('returns error on non-zero exit', () async {
+      final tool = RunDartTool(tempDir.path);
+      final result = await tool.execute({
+        'code': "void main() { throw Exception('boom'); }",
+      });
+      expect(result.success, isFalse);
+    });
+
+    test('rejects when neither path nor code is provided', () async {
+      final tool = RunDartTool(tempDir.path);
+      final result = await tool.execute({});
+      expect(result.success, isFalse);
+      expect(result.error, contains('either'));
+    });
+
+    test('rejects when both path and code are provided', () async {
+      final tool = RunDartTool(tempDir.path);
+      final result = await tool.execute({
+        'path': 'foo.dart',
+        'code': 'void main() {}',
+      });
+      expect(result.success, isFalse);
+      expect(result.error, contains('mutually exclusive'));
+    });
+
+    test('has correct permission tier', () {
+      expect(RunDartTool('/').permission, ToolPermission.process);
+    });
+  });
+
+  // ── EnvoyTools factory ─────────────────────────────────────────────────────
+
+  group('EnvoyTools', () {
+    test('defaults returns four tools', () {
+      final tools = EnvoyTools.defaults('/workspace');
+      expect(tools.length, 4);
+    });
+
+    test('tool names are unique', () {
+      final tools = EnvoyTools.defaults('/workspace');
+      final names = tools.map((t) => t.name).toSet();
+      expect(names.length, tools.length);
+    });
+
+    test('contains expected tool names', () {
+      final names = EnvoyTools.defaults('/').map((t) => t.name).toSet();
+      expect(names, containsAll(['read_file', 'write_file', 'fetch_url', 'run_dart']));
     });
   });
 }
