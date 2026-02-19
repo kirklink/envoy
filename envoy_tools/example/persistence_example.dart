@@ -97,6 +97,9 @@ Future<void> main(List<String> args) async {
     agent.registerTool(tool);
   }
 
+  // Registry search — lets the LLM find existing tools before registering new ones.
+  agent.registerTool(SearchToolsTool(storage));
+
   // Wire dynamic tool registration with persistence.
   agent.registerTool(
     RegisterToolTool(

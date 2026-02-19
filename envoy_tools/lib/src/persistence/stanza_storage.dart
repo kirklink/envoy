@@ -124,6 +124,27 @@ class StanzaEnvoyStorage {
     );
   }
 
+  /// Searches the tool registry for tools whose name or description matches
+  /// [query] using PostgreSQL full-text search.
+  ///
+  /// Returns an empty list when no tools match or the registry is empty.
+  Future<List<Map<String, String>>> searchTools(String query) async {
+    final t = ToolRecordEntity.$table;
+    final result = await _stanza.execute<ToolRecordEntity>(
+      SelectQuery(t)
+        ..selectStar()
+        ..where(t.name).fullTextMatches(query)
+        ..or(t.description).fullTextMatches(query),
+    );
+    return result.entities
+        .map((e) => {
+              'name': e.name,
+              'description': e.description,
+              'permission': e.permission,
+            })
+        .toList();
+  }
+
   // ── Sessions ────────────────────────────────────────────────────────────────
 
   /// Returns [sessionId] if it already exists, or creates a new session.

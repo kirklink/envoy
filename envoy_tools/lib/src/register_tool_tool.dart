@@ -83,6 +83,8 @@ class RegisterToolTool extends Tool with SchemaValidatingTool {
   @override
   String get description =>
       'Register a new tool by supplying its Dart implementation. '
+      'IMPORTANT: call search_tools first — only use this if no existing tool '
+      'covers the needed capability. '
       'The code is analyzed with `dart analyze` before registration. '
       'Available packages depend on the declared permission tier: '
       'compute=dart:core only; readFile/writeFile=+package:path; '
