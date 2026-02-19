@@ -375,5 +375,5 @@ class MyTool extends Tool {
   `ColumnType`. These are now exported from `annotations.dart` so entity files work without
   importing `stanza.dart` directly.
 
-- **Roadmap**: `agent_plan.md` at workspace root. Phases 0–3b + 4a done; 4b (injection),
+- **Roadmap**: `agent_plan.md` in repo root. Phases 0–3b + 4a done; 4b (injection),
   5 (Arrow HTTP), 6 (MCP) pending.
