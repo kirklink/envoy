@@ -79,6 +79,15 @@ class EnvoyAgent {
   /// Pass this method as the `onRegister` callback to [RegisterToolTool].
   void registerTool(Tool tool) => _tools[tool.name] = tool;
 
+  /// Returns `true` if a tool with [name] is currently registered.
+  ///
+  /// Pass this as the `toolExists` callback to [RegisterToolTool] to prevent
+  /// the agent from re-registering tools that are already available.
+  bool hasTool(String name) => _tools.containsKey(name);
+
+  /// Returns the registered tool with [name], or `null` if not found.
+  Tool? getTool(String name) => _tools[name];
+
   /// Executes [task], running the agent loop until a text response is produced.
   ///
   /// Returns the final text response from the model.

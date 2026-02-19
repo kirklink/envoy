@@ -61,10 +61,20 @@ class RegisterToolTool extends Tool with SchemaValidatingTool {
   /// are registered automatically.
   final OnToolRegister? onToolRegister;
 
+  /// Optional lookup to prevent duplicate registrations.
+  ///
+  /// If provided, called with the requested tool name before any file I/O.
+  /// When it returns `true`, registration is skipped with an informative
+  /// message so the LLM uses the already-registered tool instead.
+  ///
+  /// Pass `agent.hasTool` to wire this automatically.
+  final bool Function(String name)? toolExists;
+
   RegisterToolTool(
     this.workspaceRoot, {
     required this.onRegister,
     this.onToolRegister,
+    this.toolExists,
   });
 
   @override
@@ -142,6 +152,14 @@ class RegisterToolTool extends Tool with SchemaValidatingTool {
 
     if (name == null || name.isEmpty) {
       return const ToolResult.err('name is required');
+    }
+
+    // Deduplication: skip registration if the tool is already available.
+    if (toolExists != null && toolExists!(name)) {
+      return ToolResult.ok(
+        'Tool "$name" is already registered and ready to use. '
+        'Call it directly instead of re-registering.',
+      );
     }
     if (description == null || description.isEmpty) {
       return const ToolResult.err('description is required');

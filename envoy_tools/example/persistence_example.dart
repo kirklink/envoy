@@ -20,6 +20,17 @@ import 'package:envoy/envoy.dart';
 import 'package:envoy_tools/envoy_tools.dart';
 import 'package:stanza/stanza.dart';
 
+/// Returns true only when the tool is registered AND its script file exists.
+///
+/// Prevents re-registration of in-memory tools whose scripts are still on
+/// disk, while allowing recovery when a script has been deleted.
+bool _toolIsAvailable(EnvoyAgent agent, String name) {
+  final tool = agent.getTool(name);
+  if (tool == null) return false;
+  if (tool is DynamicTool) return File(tool.scriptPath).existsSync();
+  return true;
+}
+
 Future<void> main(List<String> args) async {
   final apiKey = Platform.environment['ANTHROPIC_API_KEY'];
   if (apiKey == null || apiKey.isEmpty) {
@@ -61,7 +72,9 @@ Future<void> main(List<String> args) async {
 
   // ── Agent setup ───────────────────────────────────────────────────────────
 
-  final workspaceRoot = Directory.systemTemp.createTempSync('envoy_persist_').path;
+  // Use a stable directory so dynamic tool scripts survive between runs.
+  final workspaceRoot = '${Directory.systemTemp.path}/envoy_persist_example';
+  await Directory(workspaceRoot).create(recursive: true);
 
   final agent = EnvoyAgent(
     EnvoyConfig(
@@ -88,6 +101,7 @@ Future<void> main(List<String> args) async {
   agent.registerTool(
     RegisterToolTool(
       workspaceRoot,
+      toolExists: (name) => _toolIsAvailable(agent, name),
       onRegister: (tool) {
         agent.registerTool(tool);
         if (tool is DynamicTool) {
@@ -115,6 +129,4 @@ Future<void> main(List<String> args) async {
   print('\nFinal response:');
   print(response);
   print('\nSession ID (pass to resume): $sessionId');
-
-  await Directory(workspaceRoot).delete(recursive: true);
 }
