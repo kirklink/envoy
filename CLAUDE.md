@@ -186,10 +186,11 @@ final agent = EnvoyAgent(
 );
 
 final result = await agent.run('Write hello.dart and run it.');
-print(result.response);   // final text
-print(result.outcome);     // completed or maxIterations
-print(result.tokenUsage);  // aggregated across all LLM calls
-print(result.toolCalls);   // ordered log of every tool invocation
+print(result.response);      // final text
+print(result.outcome);        // completed, maxIterations, or error
+print(result.errorMessage);   // non-null when outcome is error
+print(result.tokenUsage);     // aggregated across all LLM calls
+print(result.toolCalls);      // ordered log of every tool invocation
 ```
 
 ### With dynamic tool registration
@@ -358,9 +359,14 @@ class MyTool extends Tool {
   an escape hatch to request human input instead of burning through iterations when stuck.
 
 - **`RunResult`**: `run()` returns `RunResult` instead of `String`. Contains `response` (text),
-  `outcome` (`completed`/`maxIterations`), `iterations`, `duration`, `tokenUsage` (aggregated
-  across all LLM calls), and `toolCalls` (ordered log of every invocation with per-tool timing).
-  No more `EnvoyException` on max iterations — check `result.outcome` instead.
+  `outcome` (`completed`/`maxIterations`/`error`), `iterations`, `duration`, `tokenUsage` (aggregated
+  across all LLM calls), `toolCalls` (ordered log of every invocation with per-tool timing), and
+  optional `errorMessage`. No more exceptions — check `result.outcome` instead.
+
+- **API error handling**: The agent loop retries transient errors (429 rate limit, 529 overloaded)
+  with exponential backoff (2s, 4s, 8s — up to 3 retries). Non-retryable errors return
+  `RunResult(outcome: error, errorMessage: ...)` instead of crashing. `reflect()` silently
+  skips on API errors (best-effort).
 
 - **`EnvoyTools.defaults()` does not include `register_tool`**: Self-extension is opt-in.
   Add it explicitly with `agent.registerTool(RegisterToolTool(..., onRegister: agent.registerTool))`.

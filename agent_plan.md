@@ -278,6 +278,9 @@ Dynamic tools always run as `dart run <tool_file> <json_input>` in a subprocess.
 - [x] `RunResult`: `run()` returns structured result with response text, outcome, iterations,
   duration, aggregated `TokenUsage` (input/output/cache tokens), and `List<ToolCallRecord>`
   (per-tool timing + success/failure). No more exception on maxIterations — check `outcome`.
+- [x] API error handling: `_llmCallWithRetry()` retries transient errors (429/529) with
+  exponential backoff (2s, 4s, 8s, 3 retries max). Non-retryable errors return
+  `RunResult(outcome: error, errorMessage: ...)`. `reflect()` silently skips on API errors.
 - [ ] Wire Endorse into tool input validation *(deferred — not blocking)*
 
 ### Phase 3 — Dynamic tools **[3a done, 3b pending]**

@@ -5,6 +5,9 @@ enum RunOutcome {
 
   /// The agent exhausted [EnvoyConfig.maxIterations] without completing.
   maxIterations,
+
+  /// The run was aborted due to an API error (rate limit, server error, etc.).
+  error,
 }
 
 /// Aggregated token counts across all LLM calls in a run.
@@ -88,6 +91,9 @@ class RunResult {
   /// Ordered log of every tool invocation during this run.
   final List<ToolCallRecord> toolCalls;
 
+  /// Human-readable error message when [outcome] is [RunOutcome.error].
+  final String? errorMessage;
+
   const RunResult({
     required this.response,
     required this.outcome,
@@ -95,10 +101,15 @@ class RunResult {
     required this.duration,
     required this.tokenUsage,
     required this.toolCalls,
+    this.errorMessage,
   });
 
   @override
-  String toString() => 'RunResult($outcome, ${iterations}i, '
-      '${toolCalls.length} tools, $tokenUsage, '
-      '${duration.inMilliseconds}ms)';
+  String toString() {
+    final base = 'RunResult($outcome, ${iterations}i, '
+        '${toolCalls.length} tools, $tokenUsage, '
+        '${duration.inMilliseconds}ms)';
+    if (errorMessage != null) return '$base — $errorMessage';
+    return base;
+  }
 }

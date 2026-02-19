@@ -98,6 +98,9 @@ class EnvoyAgent {
   /// Returns the registered tool with [name], or `null` if not found.
   Tool? getTool(String name) => _tools[name];
 
+  /// Maximum retries for transient API errors (rate limit, overloaded).
+  static const _maxRetries = 3;
+
   /// Executes [task], running the agent loop until a text response is produced
   /// or [EnvoyConfig.maxIterations] is reached.
   ///
@@ -114,7 +117,23 @@ class EnvoyAgent {
 
     for (var i = 0; i < config.maxIterations; i++) {
       iterationsUsed = i + 1;
-      final response = await _llmCall();
+
+      final anthropic.Message response;
+      try {
+        response = await _llmCallWithRetry();
+      } on anthropic.AnthropicClientException catch (e) {
+        // Non-retryable API error, or retries exhausted.
+        stopwatch.stop();
+        return RunResult(
+          response: '',
+          outcome: RunOutcome.error,
+          iterations: iterationsUsed,
+          duration: stopwatch.elapsed,
+          tokenUsage: tokens,
+          toolCalls: toolCallLog,
+          errorMessage: 'API error ${e.code}: ${e.message}',
+        );
+      }
       tokens = tokens + _extractUsage(response);
 
       final toolUses = response.content.blocks
@@ -240,14 +259,20 @@ class EnvoyAgent {
       ),
     ];
 
-    final response = await _client.createMessage(
-      request: anthropic.CreateMessageRequest(
-        model: anthropic.Model.modelId(config.model),
-        maxTokens: 1024,
-        system: anthropic.CreateMessageRequestSystem.text(_systemPrompt),
-        messages: reflectMessages,
-      ),
-    );
+    final anthropic.Message response;
+    try {
+      response = await _client.createMessage(
+        request: anthropic.CreateMessageRequest(
+          model: anthropic.Model.modelId(config.model),
+          maxTokens: 1024,
+          system: anthropic.CreateMessageRequestSystem.text(_systemPrompt),
+          messages: reflectMessages,
+        ),
+      );
+    } on anthropic.AnthropicClientException {
+      // Reflection is best-effort — silently skip on API errors.
+      return;
+    }
 
     final text = response.content.text.trim();
     if (text.isEmpty || text == '[]') return;
@@ -300,16 +325,35 @@ class EnvoyAgent {
       'Use whatever type labels feel right (e.g. success, failure, curiosity, '
       'strategy, character). If nothing is worth keeping, return: []';
 
-  Future<anthropic.Message> _llmCall() {
-    return _client.createMessage(
-      request: anthropic.CreateMessageRequest(
-        model: anthropic.Model.modelId(config.model),
-        maxTokens: config.maxTokens,
-        system: anthropic.CreateMessageRequestSystem.text(_systemPrompt),
-        tools: _toolSchemas(),
-        messages: _context.messages,
-      ),
-    );
+  /// Whether [code] is a transient HTTP error worth retrying.
+  static bool _isRetryable(int? code) => code == 429 || code == 529;
+
+  /// Calls the LLM with automatic retry + exponential backoff for transient
+  /// errors (429 rate limit, 529 overloaded).
+  ///
+  /// Throws [anthropic.AnthropicClientException] if the error is
+  /// non-retryable or all retry attempts are exhausted.
+  Future<anthropic.Message> _llmCallWithRetry() async {
+    for (var attempt = 0; attempt <= _maxRetries; attempt++) {
+      try {
+        return await _client.createMessage(
+          request: anthropic.CreateMessageRequest(
+            model: anthropic.Model.modelId(config.model),
+            maxTokens: config.maxTokens,
+            system: anthropic.CreateMessageRequestSystem.text(_systemPrompt),
+            tools: _toolSchemas(),
+            messages: _context.messages,
+          ),
+        );
+      } on anthropic.AnthropicClientException catch (e) {
+        if (!_isRetryable(e.code) || attempt == _maxRetries) rethrow;
+        // Exponential backoff: 2s, 4s, 8s.
+        final delay = Duration(seconds: 2 << attempt);
+        await Future<void>.delayed(delay);
+      }
+    }
+    // Unreachable — the loop either returns or rethrows.
+    throw StateError('unreachable');
   }
 
   List<anthropic.Tool> _toolSchemas() {
