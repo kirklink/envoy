@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:envoy/envoy.dart';
 import 'package:path/path.dart' as p;
 
+import 'schema_validating_tool.dart';
+
 /// Executes a Dart script as a subprocess.
 ///
 /// Accepts either a path to an existing file or inline Dart code.
@@ -11,7 +13,7 @@ import 'package:path/path.dart' as p;
 ///
 /// Output is captured from stdout; stderr is appended on failure.
 /// Execution is bounded by [timeout].
-class RunDartTool extends Tool {
+class RunDartTool extends Tool with SchemaValidatingTool {
   final String workspaceRoot;
   final Duration timeout;
 

@@ -3,11 +3,13 @@ import 'dart:io';
 import 'package:envoy/envoy.dart';
 import 'package:path/path.dart' as p;
 
+import 'schema_validating_tool.dart';
+
 /// Writes content to a file within the workspace.
 ///
 /// Creates parent directories if they don't exist.
 /// Path traversal outside [workspaceRoot] is rejected.
-class WriteFileTool extends Tool {
+class WriteFileTool extends Tool with SchemaValidatingTool {
   final String workspaceRoot;
 
   WriteFileTool(this.workspaceRoot);

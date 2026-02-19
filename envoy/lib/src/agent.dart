@@ -113,6 +113,17 @@ class EnvoyAgent {
           continue;
         }
 
+        final validationError = await tool.validateInput(toolUse.input);
+        if (validationError != null) {
+          onToolCall?.call(toolUse.name, toolUse.input, validationError);
+          _context.addToolResult(
+            toolUse.id,
+            validationError.error ?? 'validation error',
+            isError: true,
+          );
+          continue;
+        }
+
         final result = await tool.execute(toolUse.input);
         onToolCall?.call(toolUse.name, toolUse.input, result);
         _context.addToolResult(

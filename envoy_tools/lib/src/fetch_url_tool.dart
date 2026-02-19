@@ -1,11 +1,13 @@
 import 'package:envoy/envoy.dart';
 import 'package:http/http.dart' as http;
 
+import 'schema_validating_tool.dart';
+
 /// Fetches the content of a URL via HTTP GET.
 ///
 /// Note: allowlist enforcement is deferred to Phase 3. Any reachable URL
 /// can be fetched if the agent has network permission.
-class FetchUrlTool extends Tool {
+class FetchUrlTool extends Tool with SchemaValidatingTool {
   final http.Client _client;
 
   FetchUrlTool({http.Client? client}) : _client = client ?? http.Client();

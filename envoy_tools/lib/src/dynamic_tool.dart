@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:envoy/envoy.dart';
 
+import 'schema_validating_tool.dart';
+
 /// A [Tool] backed by a Dart script file executed as a subprocess.
 ///
 /// Dynamic tools are registered at runtime by [RegisterToolTool]. The script
@@ -15,7 +17,7 @@ import 'package:envoy/envoy.dart';
 ///
 /// Only `dart:` core libraries are available to dynamic tool scripts — they
 /// run outside any package context.
-class DynamicTool extends Tool {
+class DynamicTool extends Tool with SchemaValidatingTool {
   final String _name;
   final String _description;
   final Map<String, dynamic> _inputSchema;
@@ -90,5 +92,33 @@ class DynamicTool extends Tool {
     } catch (_) {
       return ToolResult.err('invalid tool output (expected JSON): $stdout');
     }
+  }
+
+  // ── Persistence ────────────────────────────────────────────────────────────
+
+  /// Serializes this tool to a plain map for storage.
+  Map<String, dynamic> toMap() => {
+        'name': _name,
+        'description': _description,
+        'permission': _permission.name,
+        'scriptPath': scriptPath,
+        'inputSchema': jsonEncode(_inputSchema),
+      };
+
+  /// Reconstructs a [DynamicTool] from a map produced by [toMap].
+  factory DynamicTool.fromMap(Map<String, dynamic> map) {
+    final permissionStr = map['permission'] as String;
+    final permission = ToolPermission.values.firstWhere(
+      (p) => p.name == permissionStr,
+      orElse: () => ToolPermission.compute,
+    );
+    final rawSchema = map['inputSchema'] as String;
+    return DynamicTool(
+      name: map['name'] as String,
+      description: map['description'] as String,
+      permission: permission,
+      scriptPath: map['scriptPath'] as String,
+      inputSchema: jsonDecode(rawSchema) as Map<String, dynamic>,
+    );
   }
 }

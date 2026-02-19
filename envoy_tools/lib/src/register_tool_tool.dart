@@ -5,6 +5,7 @@ import 'package:envoy/envoy.dart';
 import 'package:path/path.dart' as p;
 
 import 'dynamic_tool.dart';
+import 'schema_validating_tool.dart';
 import 'tool_runner.dart';
 
 /// Called after `dart analyze` passes, before the tool is registered.
@@ -45,7 +46,7 @@ typedef OnToolRegister = FutureOr<bool> Function(
 /// - Print `{"success": true, "output": "..."}` or
 ///   `{"success": false, "error": "..."}` to stdout
 /// - `main()` may be `async`
-class RegisterToolTool extends Tool {
+class RegisterToolTool extends Tool with SchemaValidatingTool {
   final String workspaceRoot;
 
   /// Called with the newly created [DynamicTool] after successful registration.

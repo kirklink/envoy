@@ -54,6 +54,14 @@ Permission tiers: `compute < readFile < writeFile < network < process`
 - Token budget pruning at 80% of `maxTokens`: removes oldest message pairs
 - `addUser()`, `addAssistant()`, `addToolResult()`, `estimatedTokens`
 
+### Tool input validation (`envoy_tools/lib/src/schema_validator.dart`)
+
+All tools mix in `SchemaValidatingTool`, which calls `SchemaValidator.validate(input, inputSchema)`
+before `execute()`. The validator maps JSON Schema `required` + `type` fields to Endorse rules.
+Returns `ToolResult.err(...)` on failure — execution never reaches `execute()`.
+
+Supported `type` values: `string`, `integer`, `number`, `boolean`, `array`, `object`.
+
 ### Seed tools (`envoy_tools/lib/src/`)
 
 | Tool | Class | Permission | Notes |
@@ -63,6 +71,8 @@ Permission tiers: `compute < readFile < writeFile < network < process`
 | `fetch_url` | `FetchUrlTool` | `network` | Injectable `http.Client` for testability |
 | `run_dart` | `RunDartTool` | `process` | `path` or inline `code`; configurable timeout |
 | `register_tool` | `RegisterToolTool` | `process` | Meta-tool; see Dynamic Tools below |
+
+All static tools + `DynamicTool` have `SchemaValidatingTool` mixed in.
 
 ### Dynamic tools
 
@@ -119,9 +129,11 @@ envoy_tools/
   lib/envoy_tools.dart      - Public exports
   test/envoy_tools_test.dart
   example/
-    tools_example.dart      - Phase 2: write + run a Dart script
-    watch_example.dart      - onToolCall visibility demo
+    tools_example.dart        - Phase 2: write + run a Dart script
+    watch_example.dart        - onToolCall visibility demo
     dynamic_tool_example.dart - Phase 3a: agent self-registers caesar_cipher
+    package_tool_example.dart - Phase 3a: agent uses package:http in a dynamic tool
+    persistence_example.dart  - Phase 3b: session + tool registry persistence
 ```
 
 ## Commands
@@ -187,6 +199,40 @@ final response = await agent.run(
 );
 ```
 
+### With persistence (Phase 3b)
+
+```dart
+import 'package:stanza/stanza.dart';
+import 'package:envoy_tools/envoy_tools.dart';
+
+final storage = StanzaEnvoyStorage(Stanza.url('postgresql://...'));
+await storage.initialize();              // CREATE TABLE IF NOT EXISTS (idempotent)
+
+// New session, or pass a previous ID to restore:
+final sessionId = await storage.ensureSession();
+
+final context = EnvoyContext(
+  messages: await storage.loadMessages(sessionId), // empty for new session
+  onMessage: (msg) => storage.appendMessage(sessionId, msg),
+);
+
+final agent = EnvoyAgent(config, context: context, tools: EnvoyTools.defaults(root));
+
+// Restore previously registered dynamic tools:
+for (final tool in await storage.loadTools()) {
+  agent.registerTool(tool);
+}
+
+// Persist newly registered tools via the onRegister callback:
+agent.registerTool(RegisterToolTool(
+  workspaceRoot,
+  onRegister: (tool) {
+    agent.registerTool(tool);
+    if (tool is DynamicTool) storage.saveTool(tool);
+  },
+));
+```
+
 ### Writing a static tool
 
 ```dart
@@ -233,5 +279,16 @@ class MyTool extends Tool {
 - **Path traversal**: `ReadFileTool` and `WriteFileTool` normalize and check that resolved
   paths start with `workspaceRoot` before any I/O. `../../etc/passwd` → error.
 
-- **Roadmap**: `agent_plan.md` at workspace root. Phases 0–3a done; 3b (Stanza persistence),
-  4 (envoy_lore), 5 (Arrow HTTP), 6 (MCP) pending.
+- **Input validation**: Every static tool and `DynamicTool` mixes in `SchemaValidatingTool`.
+  The agent loop calls `tool.validateInput(input)` before `tool.execute(input)`. Bad inputs
+  return `ToolResult.err(...)` — `execute()` is never called.
+
+- **Persistence pattern**: `StanzaEnvoyStorage` is opt-in. Wire it via `EnvoyContext(onMessage:
+  ..., messages: ...)` for session history, and the `onRegister` callback for tool registry.
+  The agent itself has no storage dependency — see `persistence_example.dart`.
+
+- **`DynamicTool.toMap()` / `DynamicTool.fromMap()`**: Round-trip serialization for storage.
+  `inputSchema` is JSON-encoded as a string. `permission` is stored as the enum name.
+
+- **Roadmap**: `agent_plan.md` at workspace root. Phases 0–3b done; 4 (envoy_lore),
+  5 (Arrow HTTP), 6 (MCP) pending.

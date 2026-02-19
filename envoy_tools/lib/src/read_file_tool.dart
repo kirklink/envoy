@@ -3,10 +3,12 @@ import 'dart:io';
 import 'package:envoy/envoy.dart';
 import 'package:path/path.dart' as p;
 
+import 'schema_validating_tool.dart';
+
 /// Reads the contents of a file within the workspace.
 ///
 /// Path traversal outside [workspaceRoot] is rejected.
-class ReadFileTool extends Tool {
+class ReadFileTool extends Tool with SchemaValidatingTool {
   final String workspaceRoot;
 
   ReadFileTool(this.workspaceRoot);

@@ -1,5 +1,12 @@
 import 'package:anthropic_sdk_dart/anthropic_sdk_dart.dart' as anthropic;
 
+/// Called whenever a message is appended to the context.
+///
+/// Use this to persist messages as they arrive — write each message to
+/// [StanzaEnvoyStorage] so the session survives across [EnvoyAgent.run] calls.
+/// The callback fires after the message is added but before pruning.
+typedef OnMessage = void Function(anthropic.Message message);
+
 /// Manages conversation history for a single Envoy session.
 ///
 /// Stores messages as [anthropic.Message] objects ready for the API.
@@ -8,9 +15,25 @@ class EnvoyContext {
   /// Rough token budget. Pruning triggers at 80% of this value.
   final int maxTokens;
 
+  /// Optional callback fired after each message is appended.
+  ///
+  /// Use for persistence: write each incoming message to storage so
+  /// the session can be restored across process restarts.
+  final OnMessage? onMessage;
+
   final List<anthropic.Message> _messages = [];
 
-  EnvoyContext({this.maxTokens = 8192});
+  /// Creates a context, optionally pre-seeded with [messages].
+  ///
+  /// Pass [messages] to restore a previously persisted session — load them
+  /// from storage and hand them in here before the first [EnvoyAgent.run] call.
+  EnvoyContext({
+    this.maxTokens = 8192,
+    this.onMessage,
+    List<anthropic.Message>? messages,
+  }) {
+    if (messages != null) _messages.addAll(messages);
+  }
 
   /// All messages in chronological order.
   List<anthropic.Message> get messages => List.unmodifiable(_messages);
@@ -20,24 +43,28 @@ class EnvoyContext {
 
   /// Appends a user text message.
   void addUser(String text) {
-    _messages.add(anthropic.Message(
+    final msg = anthropic.Message(
       role: anthropic.MessageRole.user,
       content: anthropic.MessageContent.text(text),
-    ));
+    );
+    _messages.add(msg);
+    onMessage?.call(msg);
     _maybePrune();
   }
 
   /// Appends an assistant response (text or tool use blocks).
   void addAssistant(anthropic.MessageContent content) {
-    _messages.add(anthropic.Message(
+    final msg = anthropic.Message(
       role: anthropic.MessageRole.assistant,
       content: content,
-    ));
+    );
+    _messages.add(msg);
+    onMessage?.call(msg);
   }
 
   /// Appends a tool result as a user message, as required by the Anthropic API.
   void addToolResult(String toolUseId, String output, {bool isError = false}) {
-    _messages.add(anthropic.Message(
+    final msg = anthropic.Message(
       role: anthropic.MessageRole.user,
       content: anthropic.MessageContent.blocks([
         anthropic.Block.toolResult(
@@ -46,7 +73,9 @@ class EnvoyContext {
           isError: isError ? true : null,
         ),
       ]),
-    ));
+    );
+    _messages.add(msg);
+    onMessage?.call(msg);
   }
 
   /// Estimated token count using a 4-chars-per-token approximation.

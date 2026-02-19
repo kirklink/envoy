@@ -56,6 +56,16 @@ abstract class Tool {
   /// Permission tier required by this tool.
   ToolPermission get permission;
 
+  /// Validates [input] before [execute] is called.
+  ///
+  /// Return `null` if the input is valid; return [ToolResult.err] to
+  /// short-circuit execution and surface the error to the LLM.
+  ///
+  /// The default implementation does no validation. Override — or mix in
+  /// `SchemaValidatingTool` from `envoy_tools` — to add Endorse-backed
+  /// JSON Schema validation.
+  Future<ToolResult?> validateInput(Map<String, dynamic> input) async => null;
+
   /// Execute the tool with the given [input] map.
   Future<ToolResult> execute(Map<String, dynamic> input);
 }
