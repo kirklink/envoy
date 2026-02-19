@@ -31,6 +31,8 @@ task → EnvoyContext.addUser → for (iterations):
 - `_toolSchemas()` reads the map fresh each iteration — newly registered tools are immediately visible
 - `OnToolCall` callback fires after each tool execution (logging, progress, debugging)
 - `EnvoyConfig`: `apiKey`, `model`, `maxTokens`, `maxIterations`
+- System prompt (`systemPrompt:` on `EnvoyAgent`, default provided) sent with every LLM call
+  including `reflect()` — establishes agent identity and behavior (ask for help when stuck, etc.)
 
 ### Tool interface (`envoy/lib/src/tool.dart`)
 
@@ -70,6 +72,7 @@ Supported `type` values: `string`, `integer`, `number`, `boolean`, `array`, `obj
 | `write_file` | `WriteFileTool` | `writeFile` | Creates parent dirs; path traversal blocked |
 | `fetch_url` | `FetchUrlTool` | `network` | Injectable `http.Client` for testability |
 | `run_dart` | `RunDartTool` | `process` | `path` or inline `code`; configurable timeout |
+| `ask_user` | `AskUserTool` | `compute` | Callback-based; included in `defaults()` when `onAskUser` provided |
 | `search_tools` | `SearchToolsTool` | `network` | FTS over persisted tool registry; call before `register_tool` |
 | `register_tool` | `RegisterToolTool` | `process` | Meta-tool; always search first — see Dynamic Tools below |
 
@@ -121,6 +124,7 @@ envoy/
 
 envoy_tools/
   lib/src/
+    ask_user_tool.dart      - AskUserTool (callback-based user interaction)
     read_file_tool.dart     - ReadFileTool
     write_file_tool.dart    - WriteFileTool
     fetch_url_tool.dart     - FetchUrlTool
@@ -338,6 +342,15 @@ class MyTool extends Tool {
 
 - **Dynamic tool args limit**: JSON input is passed as `args[0]`. Works for typical inputs;
   large payloads may hit OS argument-length limits. See open question #7 in `agent_plan.md`.
+
+- **System prompt**: `EnvoyAgent(systemPrompt: ...)` — optional, with a sensible default.
+  Sent with every `_llmCall()` and `reflect()`. Establishes identity (Envoy), behavior
+  (ask for help when stuck, search before registering, think step by step). Override to
+  customize agent personality or add domain-specific instructions.
+
+- **`AskUserTool`**: Callback-based — the tool calls `OnAskUser(question)` and returns the
+  answer. Included in `EnvoyTools.defaults()` when `onAskUser:` is provided. Gives the agent
+  an escape hatch to request human input instead of burning through iterations when stuck.
 
 - **`EnvoyTools.defaults()` does not include `register_tool`**: Self-extension is opt-in.
   Add it explicitly with `agent.registerTool(RegisterToolTool(..., onRegister: agent.registerTool))`.

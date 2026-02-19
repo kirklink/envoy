@@ -1,5 +1,6 @@
 library envoy_tools;
 
+export 'src/ask_user_tool.dart';
 export 'src/dynamic_tool.dart';
 export 'src/fetch_url_tool.dart';
 export 'src/read_file_tool.dart';

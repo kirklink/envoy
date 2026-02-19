@@ -64,6 +64,7 @@ class EnvoyAgent {
   /// receives the tool name, the input the model supplied, and the result.
   final OnToolCall? onToolCall;
   final AgentMemory? _memory;
+  final String _systemPrompt;
 
   EnvoyAgent(
     this.config, {
@@ -71,10 +72,12 @@ class EnvoyAgent {
     EnvoyContext? context,
     this.onToolCall,
     AgentMemory? memory,
+    String? systemPrompt,
   })  : _client = anthropic.AnthropicClient(apiKey: config.apiKey),
         _context = context ?? EnvoyContext(maxTokens: config.maxTokens),
         _tools = {for (final t in tools) t.name: t},
-        _memory = memory;
+        _memory = memory,
+        _systemPrompt = systemPrompt ?? _defaultSystemPrompt;
 
   /// Registers or replaces a tool at runtime.
   ///
@@ -178,6 +181,7 @@ class EnvoyAgent {
       request: anthropic.CreateMessageRequest(
         model: anthropic.Model.modelId(config.model),
         maxTokens: 1024,
+        system: anthropic.CreateMessageRequestSystem.text(_systemPrompt),
         messages: reflectMessages,
       ),
     );
@@ -210,6 +214,17 @@ class EnvoyAgent {
     }
   }
 
+  static const _defaultSystemPrompt =
+      'You are Envoy, an autonomous agent that solves problems by using and '
+      'building tools.\n\n'
+      'If no existing tool covers what you need, you can write and register new '
+      'ones (search first to avoid duplicates).\n\n'
+      'When you need clarification, lack information, or are stuck after trying '
+      'multiple approaches, ask the user for help rather than guessing or '
+      'repeating failed attempts.\n\n'
+      'Think step by step. When a tool call fails, analyze the error before '
+      'retrying with the same approach.';
+
   static const _reflectPrompt =
       'Review what happened in this session. As an agent, what — if anything — '
       'do you want to remember about yourself for future sessions?\n\n'
@@ -227,6 +242,7 @@ class EnvoyAgent {
       request: anthropic.CreateMessageRequest(
         model: anthropic.Model.modelId(config.model),
         maxTokens: config.maxTokens,
+        system: anthropic.CreateMessageRequestSystem.text(_systemPrompt),
         tools: _toolSchemas(),
         messages: _context.messages,
       ),

@@ -137,16 +137,19 @@ what it's already built.
 ```
 1. Task arrives (CLI or HTTP)
 2. Load conversation history (EnvoyContext)
-3. [Future] Inject relevant memory (character, strategy, prior experience)
-4. LLM call: task + history + memory + tool schemas → response
-5. If tool call requested:
+3. System prompt establishes identity and behavior (customizable)
+4. [Future] Inject relevant memory (character, strategy, prior experience)
+5. LLM call: system prompt + history + memory + tool schemas → response
+6. If tool call requested:
    a. search_tools → check registry → call existing, or write + register new
-   b. validate inputs (Endorse) → execute in sandbox → append result → goto 4
-6. If text response: persist session → return to caller
-7. [Post-task] agent.reflect() — agent writes self-memory entries
+   b. ask_user → request human input when stuck or needing clarification
+   c. validate inputs (Endorse) → execute in sandbox → append result → goto 5
+7. If text response: persist session → return to caller
+8. [Post-task] agent.reflect() — agent writes self-memory entries
 ```
 
-Max iterations are bounded. On failure, the loop surfaces the error to the LLM once
+Max iterations are bounded. The agent can call `ask_user` when stuck rather than
+burning through iterations. On failure, the loop surfaces the error to the LLM once
 for recovery before escalating to the caller.
 
 ### Memory
@@ -269,6 +272,9 @@ Dynamic tools always run as `dart run <tool_file> <json_input>` in a subprocess.
   - `read_file`, `write_file` (tier 1/2, workspace-scoped, path traversal blocked)
   - `fetch_url` (tier 3, injectable `http.Client` for testability)
   - `run_dart` (tier 4, executes arbitrary Dart subprocess; `path` or inline `code`)
+  - `ask_user` (compute, callback-based; included in `defaults()` when `onAskUser` provided)
+- [x] System prompt on `EnvoyAgent`: default establishes identity + behavior; customizable;
+  sent with every LLM call including `reflect()`
 - [ ] Wire Endorse into tool input validation *(deferred — not blocking)*
 
 ### Phase 3 — Dynamic tools **[3a done, 3b pending]**

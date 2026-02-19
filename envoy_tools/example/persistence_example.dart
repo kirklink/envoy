@@ -90,7 +90,14 @@ Future<void> main(List<String> args) async {
     ),
     context: context,
     memory: memory,
-    tools: EnvoyTools.defaults(workspaceRoot),
+    tools: EnvoyTools.defaults(
+      workspaceRoot,
+      onAskUser: (question) async {
+        stdout.writeln('\n🤖 Agent asks: $question');
+        stdout.write('> ');
+        return stdin.readLineSync() ?? '';
+      },
+    ),
     onToolCall: (name, input, result) {
       final status = result.success ? '✓' : '✗';
       print('  [$name] $status');
