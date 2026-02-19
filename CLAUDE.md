@@ -70,7 +70,8 @@ Supported `type` values: `string`, `integer`, `number`, `boolean`, `array`, `obj
 | `write_file` | `WriteFileTool` | `writeFile` | Creates parent dirs; path traversal blocked |
 | `fetch_url` | `FetchUrlTool` | `network` | Injectable `http.Client` for testability |
 | `run_dart` | `RunDartTool` | `process` | `path` or inline `code`; configurable timeout |
-| `register_tool` | `RegisterToolTool` | `process` | Meta-tool; see Dynamic Tools below |
+| `search_tools` | `SearchToolsTool` | `network` | FTS over persisted tool registry; call before `register_tool` |
+| `register_tool` | `RegisterToolTool` | `process` | Meta-tool; always search first — see Dynamic Tools below |
 
 All static tools + `DynamicTool` have `SchemaValidatingTool` mixed in.
 
@@ -125,7 +126,14 @@ envoy_tools/
     run_dart_tool.dart      - RunDartTool
     dynamic_tool.dart       - DynamicTool (subprocess wrapper for registered tools)
     register_tool_tool.dart - RegisterToolTool (meta-tool; analyze + register)
+    schema_validator.dart   - SchemaValidator (JSON Schema → Endorse rules)
+    schema_validating_tool.dart - SchemaValidatingTool mixin
     envoy_tools.dart        - EnvoyTools.defaults() factory
+    persistence/
+      stanza_entities.dart      - ToolRecordEntity, SessionEntity, MessageEntity
+      stanza_entities.g.dart    - Generated Stanza table/entity code
+      stanza_storage.dart       - StanzaEnvoyStorage (tool registry + session history)
+      search_tools_tool.dart    - SearchToolsTool (FTS over persisted registry)
   lib/envoy_tools.dart      - Public exports
   test/envoy_tools_test.dart
   example/
@@ -133,7 +141,7 @@ envoy_tools/
     watch_example.dart        - onToolCall visibility demo
     dynamic_tool_example.dart - Phase 3a: agent self-registers caesar_cipher
     package_tool_example.dart - Phase 3a: agent uses package:http in a dynamic tool
-    persistence_example.dart  - Phase 3b: session + tool registry persistence
+    persistence_example.dart  - Phase 3b: session + tool registry persistence (full demo)
 ```
 
 ## Commands
@@ -223,15 +231,33 @@ for (final tool in await storage.loadTools()) {
   agent.registerTool(tool);
 }
 
-// Persist newly registered tools via the onRegister callback:
+// Registry search — LLM calls this before register_tool:
+agent.registerTool(SearchToolsTool(storage));
+
+// Persist newly registered tools; dedup guard prevents re-registering live tools:
 agent.registerTool(RegisterToolTool(
   workspaceRoot,
+  toolExists: (name) {
+    final tool = agent.getTool(name);
+    if (tool == null) return false;
+    if (tool is DynamicTool) return File(tool.scriptPath).existsSync();
+    return true;
+  },
   onRegister: (tool) {
     agent.registerTool(tool);
     if (tool is DynamicTool) storage.saveTool(tool);
   },
 ));
 ```
+
+`StanzaEnvoyStorage` methods:
+- `initialize()` — idempotent DDL; call every startup
+- `ensureSession([id])` — creates or restores a session
+- `loadMessages(sessionId)` → `List<anthropic.Message>` ordered by sort_order
+- `appendMessage(sessionId, message)` — called automatically via `onMessage`
+- `loadTools()` → `List<DynamicTool>` (full registry)
+- `saveTool(tool)` — upserts by name
+- `searchTools(query)` → `List<Map<String,String>>` — FTS on name + description, ranked by `ts_rank`
 
 ### Writing a static tool
 
@@ -289,6 +315,15 @@ class MyTool extends Tool {
 
 - **`DynamicTool.toMap()` / `DynamicTool.fromMap()`**: Round-trip serialization for storage.
   `inputSchema` is JSON-encoded as a string. `permission` is stored as the enum name.
+
+- **Tool deduplication**: `RegisterToolTool` accepts a `toolExists` callback. Pass a closure
+  that checks both registry presence and script file existence (`DynamicTool.scriptPath`).
+  `EnvoyAgent.hasTool(name)` checks in-memory registry; `getTool(name)` returns the `Tool`.
+
+- **Search before register**: `SearchToolsTool` uses `StanzaEnvoyStorage.searchTools()` to
+  run FTS (PostgreSQL `to_tsvector`/`plainto_tsquery`) over name and description. The
+  `register_tool` description instructs the LLM to call `search_tools` first — if a matching
+  tool is found, the LLM calls it directly without writing new code.
 
 - **Roadmap**: `agent_plan.md` at workspace root. Phases 0–3b done; 4 (envoy_lore),
   5 (Arrow HTTP), 6 (MCP) pending.
