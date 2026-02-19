@@ -1,6 +1,9 @@
+import 'dart:convert';
+
 import 'package:anthropic_sdk_dart/anthropic_sdk_dart.dart' as anthropic;
 
 import 'context.dart';
+import 'memory.dart';
 import 'tool.dart';
 
 /// Thrown when the agent cannot complete a task within [EnvoyConfig.maxIterations].
@@ -60,15 +63,18 @@ class EnvoyAgent {
   /// Useful for logging, progress indicators, or debugging. The callback
   /// receives the tool name, the input the model supplied, and the result.
   final OnToolCall? onToolCall;
+  final AgentMemory? _memory;
 
   EnvoyAgent(
     this.config, {
     List<Tool> tools = const [],
     EnvoyContext? context,
     this.onToolCall,
+    AgentMemory? memory,
   })  : _client = anthropic.AnthropicClient(apiKey: config.apiKey),
         _context = context ?? EnvoyContext(maxTokens: config.maxTokens),
-        _tools = {for (final t in tools) t.name: t};
+        _tools = {for (final t in tools) t.name: t},
+        _memory = memory;
 
   /// Registers or replaces a tool at runtime.
   ///
@@ -147,6 +153,74 @@ class EnvoyAgent {
       'task did not complete within ${config.maxIterations} iterations',
     );
   }
+
+  /// Runs a post-task reflection pass, storing self-knowledge for future sessions.
+  ///
+  /// Makes a single LLM call over the current session history and asks the agent
+  /// what — if anything — is worth remembering about itself. Entries are written
+  /// to [AgentMemory] with agent-chosen type labels (no prescribed taxonomy).
+  ///
+  /// Call this after [run] completes. It does not modify the session context.
+  /// A no-op if no [AgentMemory] was provided at construction, or if the
+  /// session has no messages yet.
+  Future<void> reflect() async {
+    if (_memory == null || _context.messages.isEmpty) return;
+
+    final reflectMessages = [
+      ..._context.messages,
+      anthropic.Message(
+        role: anthropic.MessageRole.user,
+        content: anthropic.MessageContent.text(_reflectPrompt),
+      ),
+    ];
+
+    final response = await _client.createMessage(
+      request: anthropic.CreateMessageRequest(
+        model: anthropic.Model.modelId(config.model),
+        maxTokens: 1024,
+        messages: reflectMessages,
+      ),
+    );
+
+    final text = response.content.text.trim();
+    if (text.isEmpty || text == '[]') return;
+
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is! List) return;
+      for (final item in decoded) {
+        if (item is! Map<String, dynamic>) continue;
+        final type = item['type'] as String?;
+        final content = item['content'] as String?;
+        if (type != null && type.isNotEmpty && content != null && content.isNotEmpty) {
+          await _memory!.remember(MemoryEntry(
+            type: type,
+            content: content,
+            createdAt: DateTime.now().toUtc(),
+          ));
+        }
+      }
+    } on FormatException {
+      // Agent returned non-JSON — store as a raw reflection entry.
+      await _memory!.remember(MemoryEntry(
+        type: 'reflection',
+        content: text,
+        createdAt: DateTime.now().toUtc(),
+      ));
+    }
+  }
+
+  static const _reflectPrompt =
+      'Review what happened in this session. As an agent, what — if anything — '
+      'do you want to remember about yourself for future sessions?\n\n'
+      'Write 0–3 memory entries about what you learned, what worked, what failed, '
+      'what you\'re curious about, or anything about your own nature worth preserving.\n\n'
+      'Respond with ONLY a JSON array (no other text):\n'
+      '[\n'
+      '  {"type": "your_label", "content": "the memory in your own words"}\n'
+      ']\n\n'
+      'Use whatever type labels feel right (e.g. success, failure, curiosity, '
+      'strategy, character). If nothing is worth keeping, return: []';
 
   Future<anthropic.Message> _llmCall() {
     return _client.createMessage(

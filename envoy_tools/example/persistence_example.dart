@@ -1,15 +1,18 @@
-// Persistence demo: tool registry + session history via Stanza.
+// Persistence demo: tool registry + session history + agent memory via Stanza.
 //
 // Shows how to:
 //   1. Initialize StanzaEnvoyStorage and create/restore a session
 //   2. Load previously registered dynamic tools on startup
 //   3. Hook EnvoyContext.onMessage for automatic message persistence
 //   4. Persist newly registered tools via the onRegister callback
+//   5. Wire StanzaMemoryStorage and call agent.reflect() after each run
 //
 // Two-run demo:
-//   Run #1 (no args): registers caesar_cipher, uses it, session is persisted.
+//   Run #1 (no args): registers caesar_cipher, uses it, session is persisted,
+//           agent reflects and writes any self-knowledge it wants to keep.
 //   Run #2 (pass session ID from run #1): restores history + registered tools,
-//           asks a follow-up question using the already-registered tool.
+//           asks a follow-up question, reflects again.
+//   After both runs: prints all accumulated memory entries.
 //
 // Requires: DATABASE_URL and ANTHROPIC_API_KEY environment variables.
 // Example DATABASE_URL: postgresql://user:pass@localhost:5432/envoy_dev
@@ -49,6 +52,9 @@ Future<void> main(List<String> args) async {
   final storage = StanzaEnvoyStorage(Stanza.url(dbUrl));
   await storage.initialize(); // idempotent — safe to call every startup
 
+  final memory = StanzaMemoryStorage(Stanza.url(dbUrl));
+  await memory.initialize(); // creates envoy_memory table if needed
+
   // Restore an existing session or start a new one.
   final existingSessionId = args.isNotEmpty ? args[0] : null;
   final sessionId = await storage.ensureSession(existingSessionId);
@@ -83,6 +89,7 @@ Future<void> main(List<String> args) async {
       maxTokens: 4096,
     ),
     context: context,
+    memory: memory,
     tools: EnvoyTools.defaults(workspaceRoot),
     onToolCall: (name, input, result) {
       final status = result.success ? '✓' : '✗';
@@ -131,5 +138,22 @@ Future<void> main(List<String> args) async {
 
   print('\nFinal response:');
   print(response);
+
+  // ── Reflection ────────────────────────────────────────────────────────────
+
+  print('\nReflecting...');
+  await agent.reflect();
+
+  // Show everything the agent has stored across all sessions.
+  final allMemories = await memory.recall();
+  if (allMemories.isEmpty) {
+    print('No memories stored yet.');
+  } else {
+    print('\nAgent memory (${allMemories.length} entries):');
+    for (final entry in allMemories) {
+      print('  [${entry.type}] ${entry.content}');
+    }
+  }
+
   print('\nSession ID (pass to resume): $sessionId');
 }

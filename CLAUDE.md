@@ -7,7 +7,7 @@ framework rules that generated code could bypass.
 
 ## Package Structure
 
-Single repo (`kirklink/envoy`), two packages (third — `envoy_lore` — is Phase 4):
+Single repo (`kirklink/envoy`), two packages:
 
 ```
 envoy/          - Core: agent loop, LLM interface, Tool interface, conversation context
@@ -111,6 +111,7 @@ Runner projects live at `<workspace>/.envoy/runners/<tier>/`. Each has its own
 envoy/
   lib/src/agent.dart        - EnvoyAgent, EnvoyConfig, OnToolCall typedef
   lib/src/context.dart      - EnvoyContext (conversation history + pruning)
+  lib/src/memory.dart       - MemoryEntry, AgentMemory (interface)
   lib/src/tool.dart         - Tool (abstract), ToolResult, ToolPermission
   lib/envoy.dart            - Public exports
   bin/envoy.dart            - CLI entrypoint
@@ -134,6 +135,9 @@ envoy_tools/
       stanza_entities.g.dart    - Generated Stanza table/entity code
       stanza_storage.dart       - StanzaEnvoyStorage (tool registry + session history)
       search_tools_tool.dart    - SearchToolsTool (FTS over persisted registry)
+      memory_entity.dart        - MemoryEntity (@StanzaEntity for envoy_memory table)
+      memory_entity.g.dart      - Generated Stanza table/entity code
+      stanza_memory_storage.dart - StanzaMemoryStorage (implements AgentMemory)
   lib/envoy_tools.dart      - Public exports
   test/envoy_tools_test.dart
   example/
@@ -141,7 +145,7 @@ envoy_tools/
     watch_example.dart        - onToolCall visibility demo
     dynamic_tool_example.dart - Phase 3a: agent self-registers caesar_cipher
     package_tool_example.dart - Phase 3a: agent uses package:http in a dynamic tool
-    persistence_example.dart  - Phase 3b: session + tool registry persistence (full demo)
+    persistence_example.dart  - Phase 3b+4a: session, registry, and agent memory (full demo)
 ```
 
 ## Commands
@@ -259,6 +263,42 @@ agent.registerTool(RegisterToolTool(
 - `saveTool(tool)` — upserts by name
 - `searchTools(query)` → `List<Map<String,String>>` — FTS on name + description, ranked by `ts_rank`
 
+### With agent memory (Phase 4a)
+
+```dart
+import 'package:stanza/stanza.dart';
+import 'package:envoy_tools/envoy_tools.dart';
+
+final memory = StanzaMemoryStorage(Stanza.url('postgresql://...'));
+await memory.initialize();   // creates envoy_memory table (idempotent)
+
+final agent = EnvoyAgent(
+  config,
+  context: context,
+  memory: memory,
+  tools: EnvoyTools.defaults(root),
+);
+
+final response = await agent.run(task);
+
+// Post-task reflection: agent decides what to remember about itself.
+// Makes a separate LLM call — does not modify session context.
+await agent.reflect();
+
+// Inspect what the agent stored:
+final entries = await memory.recall();
+for (final e in entries) print('[${e.type}] ${e.content}');
+
+// Filter by type or FTS query:
+final failures = await memory.recall(type: 'failure');
+final relevant = await memory.recall(query: 'tool registration');
+```
+
+`StanzaMemoryStorage` methods:
+- `initialize()` — idempotent DDL; call every startup
+- `remember(MemoryEntry)` — persist one entry (called by `reflect()` automatically)
+- `recall({type?, query?})` → `List<MemoryEntry>` — filter by type and/or FTS; newest first
+
 ### Writing a static tool
 
 ```dart
@@ -325,5 +365,15 @@ class MyTool extends Tool {
   `register_tool` description instructs the LLM to call `search_tools` first — if a matching
   tool is found, the LLM calls it directly without writing new code.
 
-- **Roadmap**: `agent_plan.md` at workspace root. Phases 0–3b done; 4 (envoy_lore),
+- **Agent memory**: `AgentMemory` interface in `envoy` core; `StanzaMemoryStorage` in
+  `envoy_tools`. Pass `memory:` to `EnvoyAgent`. Call `agent.reflect()` after `run()` —
+  it makes a separate LLM call, does not touch the session context, and stores whatever
+  the agent considers worth keeping. No prescribed type taxonomy — agent chooses its own labels.
+
+- **`stanza/annotations.dart` exports schema types**: The `stanza_builder` code generator
+  produces a `$schema` getter on table classes that references `SchemaTable`, `SchemaColumn`,
+  `ColumnType`. These are now exported from `annotations.dart` so entity files work without
+  importing `stanza.dart` directly.
+
+- **Roadmap**: `agent_plan.md` at workspace root. Phases 0–3b + 4a done; 4b (injection),
   5 (Arrow HTTP), 6 (MCP) pending.

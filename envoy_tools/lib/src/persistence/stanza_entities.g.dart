@@ -50,6 +50,70 @@ class _$ToolRecordEntityTable extends Table<ToolRecordEntity> {
       'created_at': instance.createdAt,
     };
   }
+
+  @override
+  SchemaTable get $schema => SchemaTable(
+        name: 'envoy_tools',
+        columns: [
+          SchemaColumn(
+            name: 'id',
+            type: ColumnType('integer'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+          SchemaColumn(
+            name: 'name',
+            type: ColumnType('text'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+          SchemaColumn(
+            name: 'description',
+            type: ColumnType('text'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+          SchemaColumn(
+            name: 'permission',
+            type: ColumnType('text'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+          SchemaColumn(
+            name: 'script_path',
+            type: ColumnType('text'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+          SchemaColumn(
+            name: 'input_schema',
+            type: ColumnType('text'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+          SchemaColumn(
+            name: 'created_at',
+            type: ColumnType('timestamptz'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+        ],
+        constraints: [],
+      );
 }
 
 class SessionEntityEntityException implements Exception {
@@ -82,6 +146,30 @@ class _$SessionEntityTable extends Table<SessionEntity> {
       'created_at': instance.createdAt,
     };
   }
+
+  @override
+  SchemaTable get $schema => SchemaTable(
+        name: 'envoy_sessions',
+        columns: [
+          SchemaColumn(
+            name: 'id',
+            type: ColumnType('text'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+          SchemaColumn(
+            name: 'created_at',
+            type: ColumnType('timestamptz'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+        ],
+        constraints: [],
+      );
 }
 
 class MessageEntityEntityException implements Exception {
@@ -122,4 +210,52 @@ class _$MessageEntityTable extends Table<MessageEntity> {
       'created_at': instance.createdAt,
     };
   }
+
+  @override
+  SchemaTable get $schema => SchemaTable(
+        name: 'envoy_messages',
+        columns: [
+          SchemaColumn(
+            name: 'id',
+            type: ColumnType('integer'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+          SchemaColumn(
+            name: 'session_id',
+            type: ColumnType('text'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+          SchemaColumn(
+            name: 'content',
+            type: ColumnType('text'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+          SchemaColumn(
+            name: 'sort_order',
+            type: ColumnType('integer'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+          SchemaColumn(
+            name: 'created_at',
+            type: ColumnType('timestamptz'),
+            nullable: false,
+            isPrimaryKey: false,
+            isSerial: false,
+            isUnique: false,
+          ),
+        ],
+        constraints: [],
+      );
 }
