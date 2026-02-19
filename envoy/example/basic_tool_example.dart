@@ -55,5 +55,6 @@ Future<void> main() async {
 
   print('Task: What day of the week is it today?\n');
   final result = await agent.run('What day of the week is it today?');
-  print('Response: $result');
+  print('Response: ${result.response}');
+  print(result);
 }

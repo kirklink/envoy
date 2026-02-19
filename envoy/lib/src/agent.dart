@@ -4,6 +4,7 @@ import 'package:anthropic_sdk_dart/anthropic_sdk_dart.dart' as anthropic;
 
 import 'context.dart';
 import 'memory.dart';
+import 'run_result.dart';
 import 'tool.dart';
 
 /// Thrown when the agent cannot complete a task within [EnvoyConfig.maxIterations].
@@ -97,15 +98,25 @@ class EnvoyAgent {
   /// Returns the registered tool with [name], or `null` if not found.
   Tool? getTool(String name) => _tools[name];
 
-  /// Executes [task], running the agent loop until a text response is produced.
+  /// Executes [task], running the agent loop until a text response is produced
+  /// or [EnvoyConfig.maxIterations] is reached.
   ///
-  /// Returns the final text response from the model.
-  /// Throws [EnvoyException] if [EnvoyConfig.maxIterations] is exceeded.
-  Future<String> run(String task) async {
+  /// Returns a [RunResult] containing the response text plus execution
+  /// metadata: iterations used, tool calls, token usage, and duration.
+  /// Check [RunResult.outcome] to distinguish success from exhaustion.
+  Future<RunResult> run(String task) async {
     _context.addUser(task);
 
+    final stopwatch = Stopwatch()..start();
+    var tokens = TokenUsage.zero;
+    final toolCallLog = <ToolCallRecord>[];
+    var iterationsUsed = 0;
+
     for (var i = 0; i < config.maxIterations; i++) {
+      iterationsUsed = i + 1;
       final response = await _llmCall();
+      tokens = tokens + _extractUsage(response);
+
       final toolUses = response.content.blocks
           .map((b) => b.toolUse)
           .nonNulls
@@ -114,7 +125,15 @@ class EnvoyAgent {
       if (toolUses.isEmpty) {
         // Model returned a text response — we are done.
         _context.addAssistant(response.content);
-        return response.content.text;
+        stopwatch.stop();
+        return RunResult(
+          response: response.content.text,
+          outcome: RunOutcome.completed,
+          iterations: iterationsUsed,
+          duration: stopwatch.elapsed,
+          tokenUsage: tokens,
+          toolCalls: toolCallLog,
+        );
       }
 
       // Model requested tool(s) — execute and feed results back.
@@ -123,6 +142,13 @@ class EnvoyAgent {
       for (final toolUse in toolUses) {
         final tool = _tools[toolUse.name];
         if (tool == null) {
+          toolCallLog.add(ToolCallRecord(
+            name: toolUse.name,
+            input: toolUse.input,
+            success: false,
+            output: 'unknown tool "${toolUse.name}"',
+            duration: Duration.zero,
+          ));
           _context.addToolResult(
             toolUse.id,
             'Error: unknown tool "${toolUse.name}"',
@@ -134,6 +160,13 @@ class EnvoyAgent {
         final validationError = await tool.validateInput(toolUse.input);
         if (validationError != null) {
           onToolCall?.call(toolUse.name, toolUse.input, validationError);
+          toolCallLog.add(ToolCallRecord(
+            name: toolUse.name,
+            input: toolUse.input,
+            success: false,
+            output: validationError.error ?? 'validation error',
+            duration: Duration.zero,
+          ));
           _context.addToolResult(
             toolUse.id,
             validationError.error ?? 'validation error',
@@ -142,18 +175,48 @@ class EnvoyAgent {
           continue;
         }
 
+        final toolStopwatch = Stopwatch()..start();
         final result = await tool.execute(toolUse.input);
+        toolStopwatch.stop();
+
         onToolCall?.call(toolUse.name, toolUse.input, result);
+        final output =
+            result.success ? result.output : (result.error ?? 'unknown error');
+        toolCallLog.add(ToolCallRecord(
+          name: toolUse.name,
+          input: toolUse.input,
+          success: result.success,
+          output: output,
+          duration: toolStopwatch.elapsed,
+        ));
         _context.addToolResult(
           toolUse.id,
-          result.success ? result.output : (result.error ?? 'unknown error'),
+          output,
           isError: !result.success,
         );
       }
     }
 
-    throw EnvoyException(
-      'task did not complete within ${config.maxIterations} iterations',
+    stopwatch.stop();
+    return RunResult(
+      response: '',
+      outcome: RunOutcome.maxIterations,
+      iterations: iterationsUsed,
+      duration: stopwatch.elapsed,
+      tokenUsage: tokens,
+      toolCalls: toolCallLog,
+    );
+  }
+
+  /// Extracts token usage from an LLM response.
+  static TokenUsage _extractUsage(anthropic.Message response) {
+    final usage = response.usage;
+    if (usage == null) return TokenUsage.zero;
+    return TokenUsage(
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
+      cacheReadInputTokens: usage.cacheReadInputTokens ?? 0,
     );
   }
 

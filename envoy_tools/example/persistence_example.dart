@@ -141,10 +141,11 @@ Future<void> main(List<String> args) async {
           'Then use it to encrypt "ENVOY WORKS" with shift 3.';
 
   print('\nTask: $task\n');
-  final response = await agent.run(task);
+  final result = await agent.run(task);
 
   print('\nFinal response:');
-  print(response);
+  print(result.response);
+  print('\nRun stats: $result');
 
   // ── Reflection ────────────────────────────────────────────────────────────
 

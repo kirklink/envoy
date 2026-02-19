@@ -113,6 +113,7 @@ Runner projects live at `<workspace>/.envoy/runners/<tier>/`. Each has its own
 ```
 envoy/
   lib/src/agent.dart        - EnvoyAgent, EnvoyConfig, OnToolCall typedef
+  lib/src/run_result.dart   - RunResult, RunOutcome, TokenUsage, ToolCallRecord
   lib/src/context.dart      - EnvoyContext (conversation history + pruning)
   lib/src/memory.dart       - MemoryEntry, AgentMemory (interface)
   lib/src/tool.dart         - Tool (abstract), ToolResult, ToolPermission
@@ -184,7 +185,11 @@ final agent = EnvoyAgent(
   onToolCall: (name, input, result) => print('[$name] ${result.output}'),
 );
 
-final response = await agent.run('Write hello.dart and run it.');
+final result = await agent.run('Write hello.dart and run it.');
+print(result.response);   // final text
+print(result.outcome);     // completed or maxIterations
+print(result.tokenUsage);  // aggregated across all LLM calls
+print(result.toolCalls);   // ordered log of every tool invocation
 ```
 
 ### With dynamic tool registration
@@ -210,7 +215,7 @@ agent.registerTool(
 );
 
 // Now the agent can write and register new tools itself
-final response = await agent.run(
+final result = await agent.run(
   'Create a tool that converts Celsius to Fahrenheit, then use it for 100°C.',
 );
 ```
@@ -283,7 +288,7 @@ final agent = EnvoyAgent(
   tools: EnvoyTools.defaults(root),
 );
 
-final response = await agent.run(task);
+final result = await agent.run(task);
 
 // Post-task reflection: agent decides what to remember about itself.
 // Makes a separate LLM call — does not modify session context.
@@ -351,6 +356,11 @@ class MyTool extends Tool {
 - **`AskUserTool`**: Callback-based — the tool calls `OnAskUser(question)` and returns the
   answer. Included in `EnvoyTools.defaults()` when `onAskUser:` is provided. Gives the agent
   an escape hatch to request human input instead of burning through iterations when stuck.
+
+- **`RunResult`**: `run()` returns `RunResult` instead of `String`. Contains `response` (text),
+  `outcome` (`completed`/`maxIterations`), `iterations`, `duration`, `tokenUsage` (aggregated
+  across all LLM calls), and `toolCalls` (ordered log of every invocation with per-tool timing).
+  No more `EnvoyException` on max iterations — check `result.outcome` instead.
 
 - **`EnvoyTools.defaults()` does not include `register_tool`**: Self-extension is opt-in.
   Add it explicitly with `agent.registerTool(RegisterToolTool(..., onRegister: agent.registerTool))`.

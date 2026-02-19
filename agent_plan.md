@@ -275,6 +275,9 @@ Dynamic tools always run as `dart run <tool_file> <json_input>` in a subprocess.
   - `ask_user` (compute, callback-based; included in `defaults()` when `onAskUser` provided)
 - [x] System prompt on `EnvoyAgent`: default establishes identity + behavior; customizable;
   sent with every LLM call including `reflect()`
+- [x] `RunResult`: `run()` returns structured result with response text, outcome, iterations,
+  duration, aggregated `TokenUsage` (input/output/cache tokens), and `List<ToolCallRecord>`
+  (per-tool timing + success/failure). No more exception on maxIterations — check `outcome`.
 - [ ] Wire Endorse into tool input validation *(deferred — not blocking)*
 
 ### Phase 3 — Dynamic tools **[3a done, 3b pending]**

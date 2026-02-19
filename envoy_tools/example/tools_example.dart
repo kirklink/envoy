@@ -35,7 +35,8 @@ Future<void> main() async {
   print('Workspace: $workspaceRoot');
   print('Task: $task\n');
   final result = await agent.run(task);
-  print('Response: $result');
+  print('Response: ${result.response}');
+  print(result);
 
   // Cleanup
   await Directory(workspaceRoot).delete(recursive: true);

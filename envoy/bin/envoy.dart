@@ -48,12 +48,13 @@ Future<void> main(List<String> args) async {
 
   try {
     final result = await agent.run(task);
-    stdout.writeln(result);
-  } on EnvoyException catch (e) {
-    stderr.writeln(e);
-    exit(1);
-  } catch (e) {
-    stderr.writeln('Unexpected error: $e');
+    stdout.writeln(result.response);
+    if (result.outcome == RunOutcome.maxIterations) {
+      stderr.writeln('Warning: hit max iterations (${result.iterations})');
+    }
+    stderr.writeln(result);
+  } on Exception catch (e) {
+    stderr.writeln('Error: $e');
     exit(1);
   }
 }

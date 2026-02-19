@@ -16,7 +16,7 @@ import 'memory_entity.dart';
 ///
 /// final agent = EnvoyAgent(config, memory: memory, ...);
 ///
-/// final response = await agent.run(task);
+/// final result = await agent.run(task);
 /// await agent.reflect();  // agent decides what to remember
 ///
 /// // Inspect what was stored:

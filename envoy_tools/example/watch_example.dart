@@ -122,10 +122,12 @@ Future<void> main() async {
   print(_bold('Task: $task'));
   print('');
 
-  final response = await agent.run(task);
+  final result = await agent.run(task);
 
   _divider(_bold('FINAL RESPONSE'));
-  print(response);
+  print(result.response);
+  print('');
+  print(_dim('$result'));
   print('');
 
   await Directory(workspaceRoot).delete(recursive: true);
