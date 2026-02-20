@@ -360,8 +360,9 @@ class MyTool extends Tool {
 
 - **`RunResult`**: `run()` returns `RunResult` instead of `String`. Contains `response` (text),
   `outcome` (`completed`/`maxIterations`/`error`), `iterations`, `duration`, `tokenUsage` (aggregated
-  across all LLM calls), `toolCalls` (ordered log of every invocation with per-tool timing), and
-  optional `errorMessage`. No more exceptions — check `result.outcome` instead.
+  across all LLM calls), `toolCalls` (ordered log of every invocation with per-tool timing,
+  plus `reasoning` — the agent's thinking text from each iteration), and optional `errorMessage`.
+  No more exceptions — check `result.outcome` instead.
 
 - **API error handling**: The agent loop retries transient errors (429 rate limit, 529 overloaded)
   with exponential backoff (2s, 4s, 8s — up to 3 retries). Non-retryable errors return

@@ -158,6 +158,11 @@ class EnvoyAgent {
       // Model requested tool(s) — execute and feed results back.
       _context.addAssistant(response.content);
 
+      // Extract the agent's reasoning (text blocks alongside tool_use blocks).
+      // Attached to the first ToolCallRecord of this iteration only.
+      final rawReasoning = response.content.text.trim();
+      String? reasoning = rawReasoning.isEmpty ? null : rawReasoning;
+
       for (final toolUse in toolUses) {
         final tool = _tools[toolUse.name];
         if (tool == null) {
@@ -167,7 +172,9 @@ class EnvoyAgent {
             success: false,
             output: 'unknown tool "${toolUse.name}"',
             duration: Duration.zero,
+            reasoning: reasoning,
           ));
+          reasoning = null; // Only attach to the first tool call.
           _context.addToolResult(
             toolUse.id,
             'Error: unknown tool "${toolUse.name}"',
@@ -185,7 +192,9 @@ class EnvoyAgent {
             success: false,
             output: validationError.error ?? 'validation error',
             duration: Duration.zero,
+            reasoning: reasoning,
           ));
+          reasoning = null;
           _context.addToolResult(
             toolUse.id,
             validationError.error ?? 'validation error',
@@ -207,7 +216,9 @@ class EnvoyAgent {
           success: result.success,
           output: output,
           duration: toolStopwatch.elapsed,
+          reasoning: reasoning,
         ));
+        reasoning = null;
         _context.addToolResult(
           toolUse.id,
           output,
@@ -311,7 +322,13 @@ class EnvoyAgent {
       'multiple approaches, ask the user for help rather than guessing or '
       'repeating failed attempts.\n\n'
       'Think step by step. When a tool call fails, analyze the error before '
-      'retrying with the same approach.';
+      'retrying with the same approach.\n\n'
+      'When fetching URLs:\n'
+      '- Prefer JSON API endpoints over HTML pages.\n'
+      '- Use query parameters to filter and limit results '
+      '(e.g., ?limit=1 to explore an API structure before fetching more).\n'
+      '- Large responses will be truncated. If you see a truncation notice, '
+      'try a more targeted request.';
 
   static const _reflectPrompt =
       'Review what happened in this session. As an agent, what — if anything — '

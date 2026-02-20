@@ -10,6 +10,21 @@ import 'dart:io';
 import 'package:envoy/envoy.dart';
 import 'package:envoy_tools/envoy_tools.dart';
 
+// ── ANSI helpers ─────────────────────────────────────────────────────────
+
+const _kReset = '\x1B[0m';
+const _kDim = '\x1B[2m';
+const _kCyan = '\x1B[36m';
+const _kGreen = '\x1B[32m';
+const _kRed = '\x1B[31m';
+
+String _dim(String s) => '$_kDim$s$_kReset';
+String _cyan(String s) => '$_kCyan$s$_kReset';
+String _green(String s) => '$_kGreen$s$_kReset';
+String _red(String s) => '$_kRed$s$_kReset';
+
+// ── Main ─────────────────────────────────────────────────────────────────
+
 Future<void> main() async {
   final apiKey = Platform.environment['ANTHROPIC_API_KEY'];
   if (apiKey == null || apiKey.isEmpty) {
@@ -24,7 +39,7 @@ Future<void> main() async {
     EnvoyConfig(
       apiKey: apiKey,
       model: 'claude-haiku-4-5-20251001',
-      maxTokens: 8192,
+      maxTokens: 4096,
       maxIterations: 15,
     ),
     tools: EnvoyTools.defaults(
@@ -64,8 +79,14 @@ Future<void> main() async {
   print(result.response);
   print('\n--- Stats ---');
   print(result);
+  print('\n--- Trace ---');
   for (final tc in result.toolCalls) {
-    print('  $tc');
+    if (tc.reasoning != null) {
+      print('');
+      print(_cyan('  💭 ${tc.reasoning}'));
+    }
+    final status = tc.success ? _green('✓') : _red('✗');
+    print(_dim('  [${tc.name}] $status ${tc.duration.inMilliseconds}ms'));
   }
 
   await Directory(workspaceRoot).delete(recursive: true);

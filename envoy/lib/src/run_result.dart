@@ -52,18 +52,25 @@ class ToolCallRecord {
   final String output;
   final Duration duration;
 
+  /// The agent's reasoning text from the LLM response that triggered this
+  /// tool call. Only present on the first tool call of each iteration —
+  /// subsequent parallel tool calls in the same response have `null`.
+  final String? reasoning;
+
   const ToolCallRecord({
     required this.name,
     required this.input,
     required this.success,
     required this.output,
     required this.duration,
+    this.reasoning,
   });
 
   @override
   String toString() {
     final status = success ? 'ok' : 'err';
-    return 'ToolCallRecord($name, $status, ${duration.inMilliseconds}ms)';
+    final r = reasoning != null ? ', ${reasoning!.length}ch reasoning' : '';
+    return 'ToolCallRecord($name, $status, ${duration.inMilliseconds}ms$r)';
   }
 }
 

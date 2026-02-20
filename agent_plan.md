@@ -284,6 +284,11 @@ Dynamic tools always run as `dart run <tool_file> <json_input>` in a subprocess.
 - [x] `fetch_url` HTML-to-markdown: auto-detects HTML via content-type, converts to markdown
   using `html2md` (strips `<script>`/`<style>`), caps output at configurable max (default 32K
   chars). Non-HTML (JSON, XML, text) passes through unchanged. 11 new tests with `MockClient`.
+- [x] Agent reasoning capture: `ToolCallRecord.reasoning` captures the agent's thinking text
+  from each LLM response (attached to the first tool call per iteration). Full decision trace
+  available in `RunResult.toolCalls`.
+- [x] System prompt: added fetching strategy guidance (prefer JSON APIs, use `?limit=1` to
+  explore, handle truncation notices).
 - [ ] Wire Endorse into tool input validation *(deferred — not blocking)*
 
 ### Phase 3 — Dynamic tools **[3a done, 3b pending]**
