@@ -48,7 +48,7 @@ builds it. The developer provides goals and guardrails, not pipelines.
 4. **Simple first.** Each phase must be independently useful. No phase requires the
    next to have value.
 
-5. **Leverage what exists.** Arrow (HTTP), Endorse (validation), Stanza (persistence)
+5. **Leverage what exists.** Swoop (HTTP), Endorse (validation), Stanza (persistence)
    are the runtime stack. Build the agent layer on top, not around.
 
 6. **Don't lock in.** Abstractions at LLM provider and persistence boundaries so the
@@ -72,7 +72,7 @@ envoy/
 
 | Package       | Role                                                               |
 |---------------|--------------------------------------------------------------------|
-| `arrow`       | HTTP interface for the agent; future MCP server endpoint           |
+| `swoop`       | HTTP interface for the agent; future MCP server endpoint           |
 | `endorse`     | Validates tool inputs/outputs at execution boundary                |
 | `stanza`      | Persists tool registry, session history, and agent memory          |
 
@@ -205,19 +205,19 @@ dart run envoy --session abc123 "continue from last session"
 ```
 Simplest surface. Good for development and single-task automation.
 
-### Phase 2: HTTP (Arrow)
+### Phase 2: HTTP (Swoop)
 ```
 POST /envoy/task         { task, session_id? }
 GET  /envoy/session/:id  conversation history
 GET  /envoy/tools        tool registry
 ```
-Arrow handles routing, middleware (auth, logging), and response envelope.
+Swoop handles routing, hooks (auth, logging), and response serialization.
 Enables programmatic use and multi-turn conversations over HTTP.
 
-### Phase 3: MCP Server (Arrow annotation layer)
-Arrow routes annotated with `@McpTool` are exposed as MCP-compatible tools,
-making the agent's capabilities discoverable by any MCP client (including
-Claude Desktop, other agents, IDE extensions).
+### Phase 3: MCP Server
+Envoy tools exposed as MCP-compatible tools, making the agent's capabilities
+discoverable by any MCP client (including Claude Desktop, other agents, IDE
+extensions).
 
 ---
 
@@ -365,11 +365,10 @@ Informed by real agent behavior, not assumed patterns.
 - [ ] Outcomes filed back into Lore (tools registered, strategies noted)
 
 ### Phase 5 — HTTP interface
-- [ ] Arrow integration: expose envoy as HTTP API
+- [ ] Swoop integration: expose envoy as HTTP API
 - [ ] Multi-turn conversation over HTTP (session continuity)
 
 ### Phase 6 — MCP
-- [ ] Arrow `@McpTool` annotation + code generation
 - [ ] Envoy exposes capabilities as MCP server
 
 ---
@@ -398,7 +397,7 @@ Informed by real agent behavior, not assumed patterns.
    history may behave differently on replay. Probably immutable tool versions with a
    new registration on change.
 
-5. **Streaming UX**: The loop needs streaming to feel responsive. Arrow may need
+5. **Streaming UX**: The loop needs streaming to feel responsive. Swoop may need
    streaming response support. Audit before Phase 5.
 
 6. **Allowlist enforcement for network tools**: Phase 2 defers this. Phase 3b should
