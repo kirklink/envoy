@@ -40,10 +40,11 @@ Future<void> main() async {
       apiKey: apiKey,
       model: 'claude-haiku-4-5-20251001',
       maxTokens: 4096,
-      maxIterations: 15,
+      maxIterations: 10,
     ),
     tools: EnvoyTools.defaults(
       workspaceRoot,
+      fetchMaxResponseLength: 16000, // ~4K tokens per fetch
       onAskUser: (question) async {
         stdout.writeln('\n🤖 Agent asks: $question');
         stdout.write('> ');

@@ -18,16 +18,25 @@ import 'schema_validating_tool.dart';
 class FetchUrlTool extends Tool with SchemaValidatingTool {
   final http.Client _client;
 
-  /// Maximum characters in the returned output. Responses exceeding this
-  /// limit are truncated and a notice is appended.
+  /// Maximum characters in the returned output (after conversion).
+  /// Responses exceeding this are truncated with a notice.
   final int maxResponseLength;
 
-  /// Default response length cap: ~8K tokens at 4 chars/token.
+  /// Maximum characters of raw response body to accept before conversion.
+  /// Prevents html2md from parsing enormous pages.
+  final int maxRawLength;
+
+  /// Default output cap: ~8K tokens at 4 chars/token.
   static const defaultMaxResponseLength = 32000;
+
+  /// Default raw body cap: 200KB — generous enough for most pages,
+  /// but prevents multi-MB responses from spiking CPU during parsing.
+  static const defaultMaxRawLength = 200000;
 
   FetchUrlTool({
     http.Client? client,
     this.maxResponseLength = defaultMaxResponseLength,
+    this.maxRawLength = defaultMaxRawLength,
   }) : _client = client ?? http.Client();
 
   @override
@@ -85,7 +94,11 @@ class FetchUrlTool extends Tool with SchemaValidatingTool {
         );
       }
 
+      // Cap raw body before any processing (protects html2md from huge pages).
       var body = response.body;
+      if (body.length > maxRawLength) {
+        body = body.substring(0, maxRawLength);
+      }
 
       // Convert HTML responses to markdown.
       if (_isHtml(response.headers['content-type'])) {

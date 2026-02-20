@@ -383,8 +383,16 @@ Informed by real agent behavior, not assumed patterns.
 2. **Provider abstraction**: How thin is the LLM client interface? Start Anthropic-only,
    define the interface boundary so switching providers doesn't require rewriting the loop.
 
-3. **Context window strategy**: Simple sliding window first. Smarter summarization
-   (ask LLM to summarize older context) is a Phase 3+ concern.
+3. **Context window strategy / iterative distillation**: The current sliding-window
+   pruning drops entire message pairs, which is crude. A better approach: after each
+   tool result, make a lightweight LLM call to extract the key facts (distillation),
+   then store the summary in the context instead of the raw output. An extra LLM call
+   per iteration, but potentially far fewer tokens overall — a 32K JSON response might
+   distill to 50 tokens of extracted data. This mirrors Claude Code's conversation
+   compaction and could also manifest as a two-agent pattern: Agent A (strategist)
+   reasons over summaries, Agent B (executor) does the raw fetching/building. The trust
+   and coordination model for this needs design, but the core insight is sound: the agent
+   should reason over *insights*, not raw data.
 
 4. **Tool versioning**: If a dynamic tool is updated, old executions referenced in
    history may behave differently on replay. Probably immutable tool versions with a
