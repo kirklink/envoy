@@ -70,7 +70,7 @@ Supported `type` values: `string`, `integer`, `number`, `boolean`, `array`, `obj
 |------|-------|------------|-------|
 | `read_file` | `ReadFileTool` | `readFile` | Workspace-scoped; path traversal blocked |
 | `write_file` | `WriteFileTool` | `writeFile` | Creates parent dirs; path traversal blocked |
-| `fetch_url` | `FetchUrlTool` | `network` | Injectable `http.Client` for testability |
+| `fetch_url` | `FetchUrlTool` | `network` | Auto-converts HTML→markdown; configurable size cap; injectable `http.Client` |
 | `run_dart` | `RunDartTool` | `process` | `path` or inline `code`; configurable timeout |
 | `ask_user` | `AskUserTool` | `compute` | Callback-based; included in `defaults()` when `onAskUser` provided |
 | `search_tools` | `SearchToolsTool` | `network` | FTS over persisted tool registry; call before `register_tool` |
@@ -367,6 +367,12 @@ class MyTool extends Tool {
   with exponential backoff (2s, 4s, 8s — up to 3 retries). Non-retryable errors return
   `RunResult(outcome: error, errorMessage: ...)` instead of crashing. `reflect()` silently
   skips on API errors (best-effort).
+
+- **`fetch_url` HTML-to-markdown**: HTML responses (detected via `content-type` header) are
+  automatically converted to clean markdown using `html2md`, with `<script>` and `<style>`
+  elements stripped. Non-HTML (JSON, XML, text) passes through unchanged. Output is capped
+  at `maxResponseLength` (default 32K chars / ~8K tokens) with a truncation notice. Configurable
+  via `FetchUrlTool(maxResponseLength: ...)` or `EnvoyTools.defaults(fetchMaxResponseLength: ...)`.
 
 - **`EnvoyTools.defaults()` does not include `register_tool`**: Self-extension is opt-in.
   Add it explicitly with `agent.registerTool(RegisterToolTool(..., onRegister: agent.registerTool))`.

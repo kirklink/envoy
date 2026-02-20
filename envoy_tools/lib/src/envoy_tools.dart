@@ -22,12 +22,13 @@ class EnvoyTools {
   static List<Tool> defaults(
     String workspaceRoot, {
     Duration runDartTimeout = const Duration(seconds: 30),
+    int fetchMaxResponseLength = FetchUrlTool.defaultMaxResponseLength,
     OnAskUser? onAskUser,
   }) =>
       [
         ReadFileTool(workspaceRoot),
         WriteFileTool(workspaceRoot),
-        FetchUrlTool(),
+        FetchUrlTool(maxResponseLength: fetchMaxResponseLength),
         RunDartTool(workspaceRoot, timeout: runDartTimeout),
         if (onAskUser != null) AskUserTool(onAskUser: onAskUser),
       ];

@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:envoy/envoy.dart';
 import 'package:envoy_tools/envoy_tools.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -364,6 +366,144 @@ void main(List<String> args) {
 
       final result = await tool.execute({});
       expect(result.success, isFalse);
+    });
+  });
+
+  // ── FetchUrlTool ──────────────────────────────────────────────────────────
+
+  group('FetchUrlTool', () {
+    /// Creates a FetchUrlTool backed by a MockClient that returns [body]
+    /// with the given [statusCode] and [headers].
+    FetchUrlTool toolWith({
+      required String body,
+      int statusCode = 200,
+      Map<String, String> headers = const {},
+      int? maxResponseLength,
+    }) {
+      final client = MockClient(
+        (_) async => http.Response(body, statusCode, headers: headers),
+      );
+      return FetchUrlTool(
+        client: client,
+        maxResponseLength:
+            maxResponseLength ?? FetchUrlTool.defaultMaxResponseLength,
+      );
+    }
+
+    test('converts HTML response to markdown', () async {
+      final tool = toolWith(
+        body: '<h1>Hello</h1><p>World</p>',
+        headers: {'content-type': 'text/html'},
+      );
+      final result = await tool.execute({'url': 'https://example.com'});
+      expect(result.success, isTrue);
+      expect(result.output, contains('Hello'));
+      expect(result.output, contains('World'));
+      expect(result.output, isNot(contains('<h1>')));
+      expect(result.output, isNot(contains('<p>')));
+    });
+
+    test('strips script and style elements from HTML', () async {
+      final tool = toolWith(
+        body: '<html><head><style>body{color:red}</style></head>'
+            '<body><script>alert("x")</script><p>Content</p></body></html>',
+        headers: {'content-type': 'text/html'},
+      );
+      final result = await tool.execute({'url': 'https://example.com'});
+      expect(result.success, isTrue);
+      expect(result.output, contains('Content'));
+      expect(result.output, isNot(contains('alert')));
+      expect(result.output, isNot(contains('color:red')));
+    });
+
+    test('passes JSON through unchanged', () async {
+      final json = '{"key": "value", "count": 42}';
+      final tool = toolWith(
+        body: json,
+        headers: {'content-type': 'application/json'},
+      );
+      final result = await tool.execute({'url': 'https://api.example.com'});
+      expect(result.success, isTrue);
+      expect(result.output, json);
+    });
+
+    test('passes plain text through unchanged', () async {
+      const text = 'Just some plain text.';
+      final tool = toolWith(
+        body: text,
+        headers: {'content-type': 'text/plain'},
+      );
+      final result = await tool.execute({'url': 'https://example.com/file'});
+      expect(result.success, isTrue);
+      expect(result.output, text);
+    });
+
+    test('truncates response exceeding maxResponseLength', () async {
+      final tool = toolWith(
+        body: 'A' * 200,
+        headers: {'content-type': 'text/plain'},
+        maxResponseLength: 100,
+      );
+      final result = await tool.execute({'url': 'https://example.com'});
+      expect(result.success, isTrue);
+      expect(result.output, startsWith('A' * 100));
+      expect(result.output,
+          contains('[Truncated: response exceeded 100 characters]'));
+    });
+
+    test('does not truncate response within limit', () async {
+      final tool = toolWith(
+        body: 'A' * 50,
+        headers: {'content-type': 'text/plain'},
+        maxResponseLength: 100,
+      );
+      final result = await tool.execute({'url': 'https://example.com'});
+      expect(result.success, isTrue);
+      expect(result.output, 'A' * 50);
+      expect(result.output, isNot(contains('[Truncated')));
+    });
+
+    test('handles content-type with charset parameter', () async {
+      final tool = toolWith(
+        body: '<h1>Title</h1>',
+        headers: {'content-type': 'text/html; charset=utf-8'},
+      );
+      final result = await tool.execute({'url': 'https://example.com'});
+      expect(result.success, isTrue);
+      expect(result.output, isNot(contains('<h1>')));
+    });
+
+    test('handles application/xhtml+xml content-type', () async {
+      final tool = toolWith(
+        body: '<h1>XHTML</h1>',
+        headers: {'content-type': 'application/xhtml+xml'},
+      );
+      final result = await tool.execute({'url': 'https://example.com'});
+      expect(result.success, isTrue);
+      expect(result.output, isNot(contains('<h1>')));
+    });
+
+    test('skips conversion when content-type is absent', () async {
+      const body = '<h1>Not converted</h1>';
+      final tool = toolWith(body: body);
+      final result = await tool.execute({'url': 'https://example.com'});
+      expect(result.success, isTrue);
+      expect(result.output, body);
+    });
+
+    test('returns error for HTTP 4xx/5xx', () async {
+      final tool = toolWith(
+        body: 'Not Found',
+        statusCode: 404,
+        headers: {'content-type': 'text/html'},
+      );
+      final result = await tool.execute({'url': 'https://example.com/nope'});
+      expect(result.success, isFalse);
+      expect(result.error, contains('404'));
+    });
+
+    test('has correct permission tier', () {
+      expect(FetchUrlTool().permission, ToolPermission.network);
     });
   });
 
