@@ -7,6 +7,7 @@ import 'llm_callback.dart';
 import 'models/entity.dart';
 import 'models/memory.dart';
 import 'models/relationship.dart';
+import 'personality.dart';
 import 'store/episode_entity.dart';
 import 'store/souvenir_store.dart';
 
@@ -45,6 +46,7 @@ class ConsolidationResult {
   final int relationshipsUpserted;
   final int memoriesDecayed;
   final int memoriesEmbedded;
+  final bool personalityUpdated;
 
   const ConsolidationResult({
     this.sessionsProcessed = 0,
@@ -55,8 +57,17 @@ class ConsolidationResult {
     this.relationshipsUpserted = 0,
     this.memoriesDecayed = 0,
     this.memoriesEmbedded = 0,
+    this.personalityUpdated = false,
   });
 }
+
+const _personalitySystemPrompt = '''
+Update an agent's personality based on recent experience.
+Write in third-person observational prose — a character study, not a config file.
+Be conservative: only reflect genuine, stable shifts in behavior or perspective.
+Preserve the overall structure and tone of the existing personality.
+Output only the updated personality text, no explanation or preamble.
+''';
 
 /// Extracts durable knowledge from episodic memory via LLM.
 ///
@@ -67,17 +78,20 @@ class ConsolidationResult {
 /// 4. Marks source episodes as consolidated
 /// 5. Applies importance decay to stale memories
 /// 6. Generates embeddings for new/merged memories (when provider available)
+/// 7. Updates personality (when PersonalityManager is available)
 class ConsolidationPipeline {
   final SouvenirStore _store;
   final LlmCallback _llm;
   final SouvenirConfig _config;
   final EmbeddingProvider? _embeddings;
+  final PersonalityManager? _personality;
 
   ConsolidationPipeline(
     this._store,
     this._llm,
     this._config, [
     this._embeddings,
+    this._personality,
   ]);
 
   /// Runs the full consolidation pipeline.
@@ -140,6 +154,16 @@ class ConsolidationPipeline {
       }
     }
 
+    // 6. Update personality (when configured).
+    var personalityUpdated = false;
+    if (_personality != null && _personality!.personality != null) {
+      try {
+        personalityUpdated = await _updatePersonality();
+      } catch (_) {
+        // Personality update failure is non-fatal.
+      }
+    }
+
     return ConsolidationResult(
       sessionsProcessed: sessionsProcessed,
       sessionsSkipped: sessionsSkipped,
@@ -149,6 +173,7 @@ class ConsolidationPipeline {
       relationshipsUpserted: relationshipsUpserted,
       memoriesDecayed: decayed,
       memoriesEmbedded: embedded,
+      personalityUpdated: personalityUpdated,
     );
   }
 
@@ -301,6 +326,32 @@ class ConsolidationPipeline {
       relationships: relationshipsCount,
       toEmbed: toEmbed,
     );
+  }
+
+  /// Gathers recent episodes and asks the LLM to update personality.
+  Future<bool> _updatePersonality() async {
+    final lastUpdated = _personality!.lastUpdated;
+    final recentEntities = await _store.recentEpisodes(limit: 100);
+
+    // Filter to episodes after last personality update.
+    final newEpisodes = lastUpdated != null
+        ? recentEntities.where((e) => e.timestamp.isAfter(lastUpdated))
+        : recentEntities;
+
+    if (newEpisodes.isEmpty) return false;
+
+    // Build episode summary for the LLM.
+    final buffer = StringBuffer();
+    buffer.writeln('Current personality:');
+    buffer.writeln(_personality!.personality);
+    buffer.writeln();
+    buffer.writeln('Recent episodes:');
+    for (final ep in newEpisodes) {
+      buffer.writeln('[${ep.type}] ${ep.content}');
+    }
+
+    final newText = await _llm(_personalitySystemPrompt, buffer.toString());
+    return _personality!.updatePersonality(newText.trim());
   }
 
   Future<int> _applyDecay() async {

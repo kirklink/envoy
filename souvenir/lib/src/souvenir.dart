@@ -10,6 +10,7 @@ import 'models/episode.dart';
 import 'models/memory.dart';
 import 'models/recall.dart';
 import 'models/session_context.dart';
+import 'personality.dart';
 import 'retrieval.dart';
 import 'store/souvenir_store.dart';
 
@@ -31,9 +32,11 @@ class Souvenir {
   final String? _dbPath;
   final SouvenirConfig _config;
   final EmbeddingProvider? _embeddings;
+  final String? _identityText;
 
   StanzaSqlite? _db;
   SouvenirStore? _store;
+  PersonalityManager? _personality;
   final List<Episode> _buffer = [];
 
   /// Creates a souvenir instance backed by a SQLite database at [dbPath].
@@ -41,13 +44,17 @@ class Souvenir {
   /// Pass `null` for [dbPath] to use an in-memory database (useful for tests).
   /// Pass an [EmbeddingProvider] to enable vector similarity search in recall
   /// and automatic embedding generation during consolidation.
+  /// Pass [identityText] to enable the personality system — immutable core
+  /// identity + mutable personality that drifts with consolidation.
   Souvenir({
     String? dbPath,
     SouvenirConfig config = const SouvenirConfig(),
     EmbeddingProvider? embeddings,
+    String? identityText,
   })  : _dbPath = dbPath,
         _config = config,
-        _embeddings = embeddings;
+        _embeddings = embeddings,
+        _identityText = identityText;
 
   /// Opens the database and creates tables. Idempotent — safe on every startup.
   Future<void> initialize() async {
@@ -56,6 +63,15 @@ class Souvenir {
         : StanzaSqlite.memory();
     _store = SouvenirStore(_db!);
     await _store!.initialize();
+
+    // Initialize personality system.
+    _personality = PersonalityManager(
+      _store!,
+      identityText: _identityText,
+      config: _config,
+      embeddings: _embeddings,
+    );
+    await _personality!.initialize();
   }
 
   /// Flushes the buffer and closes the database.
@@ -165,6 +181,8 @@ class Souvenir {
     return SessionContext(
       memories: memories,
       episodes: episodes,
+      personality: _personality?.personality,
+      identity: _personality?.identity,
     );
   }
 
@@ -177,7 +195,30 @@ class Souvenir {
   Future<ConsolidationResult> consolidate(LlmCallback llm) async {
     _requireInitialized();
     await flush();
-    return ConsolidationPipeline(_store!, llm, _config, _embeddings).run();
+    return ConsolidationPipeline(
+      _store!, llm, _config, _embeddings, _personality,
+    ).run();
+  }
+
+  /// The immutable core identity text, or null if not configured.
+  String? get identity => _personality?.identity;
+
+  /// The current personality text, or null if not configured.
+  String? get personality => _personality?.personality;
+
+  /// Resets personality to a previous state.
+  ///
+  /// See [ResetLevel] for available reset modes.
+  Future<void> resetPersonality(
+    ResetLevel level, {
+    LlmCallback? llm,
+    DateTime? date,
+  }) async {
+    _requireInitialized();
+    if (_personality == null) {
+      throw StateError('Personality system not configured.');
+    }
+    await _personality!.reset(level, llm: llm, date: date);
   }
 
   /// Number of episodes currently buffered in working memory.

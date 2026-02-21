@@ -82,6 +82,15 @@ class SouvenirConfig {
   /// Only used when an [EmbeddingProvider] is available.
   final int embeddingTopK;
 
+  // ── Personality ────────────────────────────────────────────────────────
+
+  /// Minimum cosine distance between old and new personality text before an
+  /// update is applied. Range 0.0–1.0; lower = more sensitive to change.
+  ///
+  /// Only enforced when an [EmbeddingProvider] is available. Without
+  /// embeddings, every LLM-suggested personality update is applied.
+  final double minPersonalityDrift;
+
   const SouvenirConfig({
     // Write pipeline.
     this.flushThreshold = 50,
@@ -108,6 +117,8 @@ class SouvenirConfig {
     this.tokenEstimationDivisor = 4.0,
     // Embeddings.
     this.embeddingTopK = 20,
+    // Personality.
+    this.minPersonalityDrift = 0.1,
   });
 
   /// Returns the default importance for the given [episodeType] name.

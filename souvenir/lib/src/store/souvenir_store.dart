@@ -83,6 +83,23 @@ class SouvenirStore {
         PRIMARY KEY (from_entity, to_entity, relation)
       )
     ''');
+
+    // Personality key-value store.
+    await _db.rawExecute('''
+      CREATE TABLE IF NOT EXISTS personality (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    ''');
+
+    // Personality history snapshots.
+    await _db.rawExecute('''
+      CREATE TABLE IF NOT EXISTS personality_history (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        content    TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    ''');
   }
 
   // ── Episode operations ────────────────────────────────────────────────────
@@ -536,6 +553,104 @@ class SouvenirStore {
       parameters: {':rate': decayRate, ':cutoff': cutoff},
     );
     return result.affectedRows;
+  }
+
+  // ── Personality operations ────────────────────────────────────────────────
+
+  /// Returns the current personality text, or null if not set.
+  Future<String?> getPersonality() async {
+    final result = await _db.rawExecute(
+      "SELECT value FROM personality WHERE key = 'text'",
+    );
+    return result.isEmpty ? null : result.rows.first['value'] as String;
+  }
+
+  /// Returns when the personality was last updated, or null if never set.
+  Future<DateTime?> getPersonalityLastUpdated() async {
+    final result = await _db.rawExecute(
+      "SELECT value FROM personality WHERE key = 'last_updated'",
+    );
+    if (result.isEmpty) return null;
+    return DateTime.parse(result.rows.first['value'] as String);
+  }
+
+  /// Saves personality text, snapshotting the current text to history first.
+  ///
+  /// If there is no current personality (initial seed), no snapshot is created.
+  Future<void> savePersonality(String text) async {
+    final now = DateTime.now().toUtc().toIso8601String();
+
+    await _db.transaction((session) async {
+      // Snapshot current text to history (if any).
+      final existing = await session.rawExecute(
+        "SELECT value FROM personality WHERE key = 'text'",
+      );
+      if (existing.isNotEmpty) {
+        final oldText = existing.rows.first['value'] as String;
+        await session.rawExecute(
+          'INSERT INTO personality_history (content, created_at) '
+          'VALUES (:content, :created)',
+          parameters: {':content': oldText, ':created': now},
+        );
+      }
+
+      // Upsert current personality text.
+      await session.rawExecute(
+        "INSERT OR REPLACE INTO personality (key, value) VALUES ('text', :text)",
+        parameters: {':text': text},
+      );
+
+      // Upsert last_updated timestamp.
+      await session.rawExecute(
+        "INSERT OR REPLACE INTO personality (key, value) "
+        "VALUES ('last_updated', :now)",
+        parameters: {':now': now},
+      );
+    });
+  }
+
+  /// Saves personality text without creating a history snapshot.
+  ///
+  /// Used for the initial seed (identity → personality) where there is no
+  /// prior text to snapshot.
+  Future<void> initPersonality(String text) async {
+    final now = DateTime.now().toUtc().toIso8601String();
+    await _db.rawExecute(
+      "INSERT OR REPLACE INTO personality (key, value) VALUES ('text', :text)",
+      parameters: {':text': text},
+    );
+    await _db.rawExecute(
+      "INSERT OR REPLACE INTO personality (key, value) "
+      "VALUES ('last_updated', :now)",
+      parameters: {':now': now},
+    );
+  }
+
+  /// Returns personality history snapshots, newest first.
+  Future<List<({String content, DateTime createdAt})>> personalityHistory({
+    int limit = 20,
+  }) async {
+    final result = await _db.rawExecute(
+      'SELECT content, created_at FROM personality_history '
+      'ORDER BY created_at DESC LIMIT :limit',
+      parameters: {':limit': limit},
+    );
+    return result.rows.map((row) {
+      return (
+        content: row['content'] as String,
+        createdAt: DateTime.parse(row['created_at'] as String),
+      );
+    }).toList();
+  }
+
+  /// Returns the nearest personality snapshot on or before [date].
+  Future<String?> personalityHistoryAt(DateTime date) async {
+    final result = await _db.rawExecute(
+      'SELECT content FROM personality_history '
+      'WHERE created_at <= :date ORDER BY created_at DESC LIMIT 1',
+      parameters: {':date': date.toUtc().toIso8601String()},
+    );
+    return result.isEmpty ? null : result.rows.first['content'] as String;
   }
 
   // ── Internal helpers ──────────────────────────────────────────────────────

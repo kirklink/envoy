@@ -1242,6 +1242,205 @@ void main() {
       expect(custom.embeddingTopK, 5);
     });
   });
+
+  // ── Personality ──────────────────────────────────────────────────────────
+
+  group('Personality', () {
+    test('identity getter returns constructor text', () async {
+      final souvenir = Souvenir(identityText: 'I am a helpful assistant.');
+      await souvenir.initialize();
+      expect(souvenir.identity, 'I am a helpful assistant.');
+      await souvenir.close();
+    });
+
+    test('personality seeded from identity on first init', () async {
+      final souvenir = Souvenir(identityText: 'Core identity text here.');
+      await souvenir.initialize();
+      expect(souvenir.personality, 'Core identity text here.');
+      await souvenir.close();
+    });
+
+    test('without identityText, personality and identity are null', () async {
+      final souvenir = Souvenir();
+      await souvenir.initialize();
+      expect(souvenir.identity, isNull);
+      expect(souvenir.personality, isNull);
+      await souvenir.close();
+    });
+
+    test('loadContext includes personality and identity', () async {
+      final souvenir = Souvenir(
+        identityText: 'A meticulous code assistant.',
+        config: const SouvenirConfig(
+          consolidationMinAge: Duration.zero,
+          flushThreshold: 100,
+        ),
+      );
+      await souvenir.initialize();
+
+      await souvenir.record(Episode(
+        sessionId: 'ses_01',
+        type: EpisodeType.observation,
+        content: 'Testing session context',
+      ));
+      await souvenir.flush();
+
+      final context = await souvenir.loadContext('anything');
+      expect(context.identity, 'A meticulous code assistant.');
+      expect(context.personality, 'A meticulous code assistant.');
+      await souvenir.close();
+    });
+
+    test('consolidation updates personality', () async {
+      final souvenir = Souvenir(
+        identityText: 'A curious and methodical agent.',
+        config: const SouvenirConfig(
+          consolidationMinAge: Duration.zero,
+          flushThreshold: 100,
+        ),
+      );
+      await souvenir.initialize();
+
+      await souvenir.record(Episode(
+        sessionId: 'ses_01',
+        type: EpisodeType.decision,
+        content: 'Decided to use dark mode for all interfaces',
+      ));
+      await souvenir.flush();
+
+      final result = await souvenir.consolidate(_personalityMockLlm);
+      expect(result.personalityUpdated, isTrue);
+      expect(souvenir.personality, isNot('A curious and methodical agent.'));
+      await souvenir.close();
+    });
+
+    test('consolidation skips personality when not configured', () async {
+      final souvenir = Souvenir(
+        config: const SouvenirConfig(
+          consolidationMinAge: Duration.zero,
+          flushThreshold: 100,
+        ),
+      );
+      await souvenir.initialize();
+
+      await souvenir.record(Episode(
+        sessionId: 'ses_01',
+        type: EpisodeType.decision,
+        content: 'Decided to use dark mode',
+      ));
+      await souvenir.flush();
+
+      final result = await souvenir.consolidate(_mockLlm);
+      expect(result.personalityUpdated, isFalse);
+      expect(souvenir.personality, isNull);
+      await souvenir.close();
+    });
+
+    test('drift threshold prevents update when change is small', () async {
+      final souvenir = Souvenir(
+        identityText: 'A helpful assistant.',
+        config: const SouvenirConfig(
+          consolidationMinAge: Duration.zero,
+          flushThreshold: 100,
+          minPersonalityDrift: 0.99, // Very high — almost never update.
+        ),
+        embeddings: _MockEmbeddingProvider(),
+      );
+      await souvenir.initialize();
+
+      await souvenir.record(Episode(
+        sessionId: 'ses_01',
+        type: EpisodeType.decision,
+        content: 'Decided to use dark mode',
+      ));
+      await souvenir.flush();
+
+      final result = await souvenir.consolidate(_personalityMockLlm);
+      // Drift threshold is 0.99 — the LLM-suggested text is different enough
+      // in content but the mock embeddings should produce a small cosine
+      // distance, so the update should be skipped.
+      expect(result.personalityUpdated, isFalse);
+      expect(souvenir.personality, 'A helpful assistant.');
+      await souvenir.close();
+    });
+
+    test('hard reset restores identity', () async {
+      final souvenir = Souvenir(
+        identityText: 'Original identity.',
+        config: const SouvenirConfig(
+          consolidationMinAge: Duration.zero,
+          flushThreshold: 100,
+        ),
+      );
+      await souvenir.initialize();
+
+      // Consolidate to change personality.
+      await souvenir.record(Episode(
+        sessionId: 'ses_01',
+        type: EpisodeType.decision,
+        content: 'Decided to use dark mode',
+      ));
+      await souvenir.flush();
+      await souvenir.consolidate(_personalityMockLlm);
+      expect(souvenir.personality, isNot('Original identity.'));
+
+      // Hard reset.
+      await souvenir.resetPersonality(ResetLevel.hard);
+      expect(souvenir.personality, 'Original identity.');
+      await souvenir.close();
+    });
+
+    test('rollback restores historical snapshot', () async {
+      final souvenir = Souvenir(
+        identityText: 'Version zero.',
+        config: const SouvenirConfig(
+          consolidationMinAge: Duration.zero,
+          flushThreshold: 100,
+        ),
+      );
+      await souvenir.initialize();
+
+      // First consolidation changes personality (creates snapshot of v0).
+      await souvenir.record(Episode(
+        sessionId: 'ses_01',
+        type: EpisodeType.decision,
+        content: 'Decided to use dark mode',
+      ));
+      await souvenir.flush();
+      await souvenir.consolidate(_personalityMockLlm);
+      final v1 = souvenir.personality;
+      expect(v1, isNot('Version zero.'));
+
+      // Rollback to before v1 was saved — should get "Version zero." back.
+      await souvenir.resetPersonality(
+        ResetLevel.rollback,
+        date: DateTime.now().add(const Duration(seconds: 1)),
+      );
+      // The snapshot saved when v1 replaced v0 is "Version zero.".
+      expect(souvenir.personality, 'Version zero.');
+      await souvenir.close();
+    });
+
+    test('estimatedTokens includes personality and identity', () {
+      final context = SessionContext(
+        personality: 'a' * 100, // 25 tokens
+        identity: 'b' * 200, // 50 tokens
+      );
+      expect(context.estimatedTokens, 75);
+    });
+  });
+}
+
+/// Mock LLM that handles both fact extraction and personality updates.
+///
+/// Distinguishes calls by checking the system prompt: personality-related
+/// prompts get a plain-text response; fact extraction prompts get JSON.
+Future<String> _personalityMockLlm(String system, String user) async {
+  if (system.contains('personality')) {
+    return 'The agent has become more detail-oriented and cautious in its '
+        'approach, favoring thoroughness over speed.';
+  }
+  return _mockLlm(system, user);
 }
 
 /// Mock embedding provider that produces deterministic vectors.
