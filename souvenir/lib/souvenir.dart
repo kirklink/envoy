@@ -2,6 +2,7 @@ library souvenir;
 
 export 'src/config.dart';
 export 'src/consolidation.dart' show ConsolidationResult;
+export 'src/embedding_provider.dart';
 export 'src/llm_callback.dart';
 export 'src/models/entity.dart';
 export 'src/models/episode.dart';

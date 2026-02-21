@@ -75,6 +75,13 @@ class SouvenirConfig {
   /// The heuristic `chars / divisor` gives ~80% accuracy for English text.
   final double tokenEstimationDivisor;
 
+  // ── Embeddings ──────────────────────────────────────────────────────────
+
+  /// Number of vector similarity candidates to consider before RRF fusion.
+  ///
+  /// Only used when an [EmbeddingProvider] is available.
+  final int embeddingTopK;
+
   const SouvenirConfig({
     // Write pipeline.
     this.flushThreshold = 50,
@@ -99,6 +106,8 @@ class SouvenirConfig {
     this.temporalDecayLambda = 0.01,
     this.contextTokenBudget = 4000,
     this.tokenEstimationDivisor = 4.0,
+    // Embeddings.
+    this.embeddingTopK = 20,
   });
 
   /// Returns the default importance for the given [episodeType] name.

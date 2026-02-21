@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'config.dart';
+import 'embedding_provider.dart';
 import 'models/recall.dart';
 import 'store/memory_entity.dart';
 import 'store/souvenir_store.dart';
@@ -13,7 +14,7 @@ import 'store/souvenir_store.dart';
 ///
 /// Pipeline stages:
 /// 1. Gather ranked lists from each signal (BM25 episodic, BM25 semantic,
-///    entity graph expansion).
+///    vector similarity, entity graph expansion).
 /// 2. Reciprocal Rank Fusion — fuse by ID.
 /// 3. Score adjustments — temporal decay, importance boost, access frequency.
 /// 4. Sort, deduplicate by exact content match.
@@ -22,8 +23,9 @@ import 'store/souvenir_store.dart';
 class RetrievalPipeline {
   final SouvenirStore _store;
   final SouvenirConfig _config;
+  final EmbeddingProvider? _embeddings;
 
-  RetrievalPipeline(this._store, this._config);
+  RetrievalPipeline(this._store, this._config, [this._embeddings]);
 
   /// Runs the full retrieval pipeline for [query].
   Future<List<Recall>> run(String query, RecallOptions options) async {
@@ -41,7 +43,13 @@ class RetrievalPipeline {
       if (semantic.isNotEmpty) rankedLists.add(semantic);
     }
 
-    // Signal 3: Entity graph expansion.
+    // Signal 3: Vector similarity over memory embeddings.
+    if (_embeddings != null) {
+      final vector = await _searchByVector(query);
+      if (vector.isNotEmpty) rankedLists.add(vector);
+    }
+
+    // Signal 4: Entity graph expansion.
     final entityResults = await _expandEntityGraph(query);
     if (entityResults.isNotEmpty) rankedLists.add(entityResults);
 
@@ -98,7 +106,8 @@ class RetrievalPipeline {
     final semanticIds = recalls
         .where((r) =>
             r.source == RecallSource.semantic ||
-            r.source == RecallSource.entity)
+            r.source == RecallSource.entity ||
+            r.source == RecallSource.vector)
         .map((r) => r.id)
         .toList();
 
@@ -152,6 +161,42 @@ class RetrievalPipeline {
         timestamp: r.entity.updatedAt,
         importance: r.entity.importance,
         accessCount: r.entity.accessCount,
+        rank: i + 1,
+      );
+    }).toList();
+  }
+
+  /// Vector similarity search over memory embeddings.
+  ///
+  /// Embeds the query, loads all memories with embeddings, computes cosine
+  /// similarity, and returns the top candidates ranked by similarity.
+  Future<List<_RankedCandidate>> _searchByVector(String query) async {
+    final queryEmbedding = await _embeddings!.embed(query);
+    final memories = await _store.loadMemoriesWithEmbeddings();
+    if (memories.isEmpty) return [];
+
+    // Score each memory by cosine similarity.
+    final scored = <({MemoryWithEmbedding memory, double similarity})>[];
+    for (final mem in memories) {
+      final sim = _cosineSimilarity(queryEmbedding, mem.embedding);
+      if (sim > 0) {
+        scored.add((memory: mem, similarity: sim));
+      }
+    }
+
+    // Sort by similarity descending, take top candidates.
+    scored.sort((a, b) => b.similarity.compareTo(a.similarity));
+    final topK = scored.take(_config.embeddingTopK).toList();
+
+    return topK.indexed.map((entry) {
+      final (i, s) = entry;
+      return _RankedCandidate(
+        id: s.memory.id,
+        content: s.memory.content,
+        source: RecallSource.vector,
+        timestamp: s.memory.updatedAt,
+        importance: s.memory.importance,
+        accessCount: s.memory.accessCount,
         rank: i + 1,
       );
     }).toList();
@@ -297,6 +342,22 @@ class RetrievalPipeline {
     }
     return result;
   }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Cosine similarity between two vectors. Returns 0.0 for mismatched lengths
+/// or zero-magnitude vectors.
+double _cosineSimilarity(List<double> a, List<double> b) {
+  if (a.length != b.length) return 0.0;
+  var dot = 0.0, normA = 0.0, normB = 0.0;
+  for (var i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  final denom = math.sqrt(normA) * math.sqrt(normB);
+  return denom == 0 ? 0.0 : dot / denom;
 }
 
 // ── Internal types ──────────────────────────────────────────────────────────

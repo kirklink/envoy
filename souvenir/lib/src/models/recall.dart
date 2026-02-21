@@ -1,5 +1,5 @@
 /// Source tier of a recall result.
-enum RecallSource { episodic, semantic, entity }
+enum RecallSource { episodic, semantic, entity, vector }
 
 /// A retrieved memory result with relevance score.
 class Recall {

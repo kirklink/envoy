@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:stanza/stanza.dart' hide Entity;
 import 'package:stanza_sqlite/stanza_sqlite.dart';
@@ -332,6 +333,58 @@ class SouvenirStore {
     return result.rows.first['cnt'] as int;
   }
 
+  // ── Embedding operations ──────────────────────────────────────────────────
+
+  /// Stores an embedding vector for a memory as a BLOB.
+  ///
+  /// Converts the [embedding] to a [Float32List] and stores the raw bytes.
+  Future<void> updateMemoryEmbedding(
+    String id,
+    List<double> embedding,
+  ) async {
+    final blob = _embeddingToBlob(embedding);
+    await _db.rawExecute(
+      'UPDATE memories SET embedding = :embedding WHERE id = :id',
+      parameters: {':embedding': blob, ':id': id},
+    );
+  }
+
+  /// Loads all memories that have embeddings, returning parsed vectors.
+  ///
+  /// Used by the retrieval pipeline for cosine similarity search.
+  Future<List<MemoryWithEmbedding>> loadMemoriesWithEmbeddings() async {
+    final result = await _db.rawExecute(
+      'SELECT id, content, embedding, updated_at, importance, access_count '
+      'FROM memories WHERE embedding IS NOT NULL',
+    );
+
+    return result.rows.map((row) {
+      final blob = row['embedding'] as Uint8List;
+      return MemoryWithEmbedding(
+        id: row['id'] as String,
+        content: row['content'] as String,
+        embedding: _blobToEmbedding(blob),
+        updatedAt: DateTime.parse(row['updated_at'] as String),
+        importance: (row['importance'] as num).toDouble(),
+        accessCount: (row['access_count'] as num).toInt(),
+      );
+    }).toList();
+  }
+
+  /// Converts a [List<double>] embedding to BLOB bytes.
+  static Uint8List _embeddingToBlob(List<double> embedding) {
+    final float32 = Float32List.fromList(embedding);
+    return float32.buffer.asUint8List();
+  }
+
+  /// Converts BLOB bytes back to a [List<double>] embedding.
+  static List<double> _blobToEmbedding(Uint8List blob) {
+    // Copy to an aligned buffer — raw SQLite bytes may not be Float32-aligned.
+    final aligned = Float32List(blob.length ~/ 4);
+    aligned.buffer.asUint8List().setAll(0, blob);
+    return aligned.toList();
+  }
+
   // ── Entity operations ─────────────────────────────────────────────────────
 
   /// Finds an entity by exact name match.
@@ -503,6 +556,10 @@ class SouvenirStore {
   }
 
   /// Converts raw memory row DateTime strings to objects and strips extras.
+  ///
+  /// The `embedding` column stores a BLOB (Uint8List) but the Stanza-generated
+  /// entity expects `String?`. We null it out here — embedding data is accessed
+  /// via [loadMemoriesWithEmbeddings] instead.
   static Map<String, dynamic> _convertMemoryRow(Map<String, dynamic> row) {
     final converted = Map<String, dynamic>.from(row);
     if (converted['created_at'] is String) {
@@ -516,6 +573,10 @@ class SouvenirStore {
     if (converted['last_accessed'] is String) {
       converted['last_accessed'] =
           DateTime.parse(converted['last_accessed'] as String);
+    }
+    // BLOB embedding can't be cast to String? — strip it for typed entity.
+    if (converted['embedding'] is Uint8List) {
+      converted['embedding'] = null;
     }
     converted.remove('rank');
     return converted;
@@ -550,4 +611,25 @@ class SouvenirStore {
     );
     return result.isNotEmpty;
   }
+}
+
+/// A memory record with its parsed embedding vector.
+///
+/// Used by the retrieval pipeline for vector similarity search.
+class MemoryWithEmbedding {
+  final String id;
+  final String content;
+  final List<double> embedding;
+  final DateTime updatedAt;
+  final double importance;
+  final int accessCount;
+
+  const MemoryWithEmbedding({
+    required this.id,
+    required this.content,
+    required this.embedding,
+    required this.updatedAt,
+    required this.importance,
+    required this.accessCount,
+  });
 }

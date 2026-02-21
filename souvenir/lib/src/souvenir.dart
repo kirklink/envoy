@@ -4,6 +4,7 @@ import 'package:stanza_sqlite/stanza_sqlite.dart';
 
 import 'config.dart';
 import 'consolidation.dart';
+import 'embedding_provider.dart';
 import 'llm_callback.dart';
 import 'models/episode.dart';
 import 'models/memory.dart';
@@ -29,6 +30,7 @@ import 'store/souvenir_store.dart';
 class Souvenir {
   final String? _dbPath;
   final SouvenirConfig _config;
+  final EmbeddingProvider? _embeddings;
 
   StanzaSqlite? _db;
   SouvenirStore? _store;
@@ -37,11 +39,15 @@ class Souvenir {
   /// Creates a souvenir instance backed by a SQLite database at [dbPath].
   ///
   /// Pass `null` for [dbPath] to use an in-memory database (useful for tests).
+  /// Pass an [EmbeddingProvider] to enable vector similarity search in recall
+  /// and automatic embedding generation during consolidation.
   Souvenir({
     String? dbPath,
     SouvenirConfig config = const SouvenirConfig(),
+    EmbeddingProvider? embeddings,
   })  : _dbPath = dbPath,
-        _config = config;
+        _config = config,
+        _embeddings = embeddings;
 
   /// Opens the database and creates tables. Idempotent — safe on every startup.
   Future<void> initialize() async {
@@ -85,16 +91,17 @@ class Souvenir {
 
   /// Searches memory using multi-signal retrieval with RRF fusion.
   ///
-  /// Queries episodic memory (BM25), semantic memory (BM25), and the entity
-  /// knowledge graph. Results are fused via Reciprocal Rank Fusion and
-  /// adjusted by temporal decay, importance, and access frequency.
+  /// Queries episodic memory (BM25), semantic memory (BM25), vector similarity
+  /// (when an [EmbeddingProvider] is available), and the entity knowledge
+  /// graph. Results are fused via Reciprocal Rank Fusion and adjusted by
+  /// temporal decay, importance, and access frequency.
   Future<List<Recall>> recall(
     String query, {
     RecallOptions? options,
   }) async {
     _requireInitialized();
     final opts = options ?? RecallOptions(topK: _config.recallTopK);
-    return RetrievalPipeline(_store!, _config).run(query, opts);
+    return RetrievalPipeline(_store!, _config, _embeddings).run(query, opts);
   }
 
   /// Assembles a [SessionContext] for the start of a new agent session.
@@ -164,11 +171,13 @@ class Souvenir {
   /// Consolidates unconsolidated episodes into semantic memories.
   ///
   /// Requires an [LlmCallback] for fact extraction. Passed per-call because
-  /// the agent may not always have an LLM available.
+  /// the agent may not always have an LLM available. When an
+  /// [EmbeddingProvider] was given at construction, embeddings are generated
+  /// for each new or merged memory.
   Future<ConsolidationResult> consolidate(LlmCallback llm) async {
     _requireInitialized();
     await flush();
-    return ConsolidationPipeline(_store!, llm, _config).run();
+    return ConsolidationPipeline(_store!, llm, _config, _embeddings).run();
   }
 
   /// Number of episodes currently buffered in working memory.

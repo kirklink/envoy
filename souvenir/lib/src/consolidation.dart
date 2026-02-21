@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'config.dart';
+import 'embedding_provider.dart';
 import 'llm_callback.dart';
 import 'models/entity.dart';
 import 'models/memory.dart';
@@ -43,6 +44,7 @@ class ConsolidationResult {
   final int entitiesUpserted;
   final int relationshipsUpserted;
   final int memoriesDecayed;
+  final int memoriesEmbedded;
 
   const ConsolidationResult({
     this.sessionsProcessed = 0,
@@ -52,6 +54,7 @@ class ConsolidationResult {
     this.entitiesUpserted = 0,
     this.relationshipsUpserted = 0,
     this.memoriesDecayed = 0,
+    this.memoriesEmbedded = 0,
   });
 }
 
@@ -63,12 +66,19 @@ class ConsolidationResult {
 /// 3. Merges or inserts memories, upserts entities/relationships
 /// 4. Marks source episodes as consolidated
 /// 5. Applies importance decay to stale memories
+/// 6. Generates embeddings for new/merged memories (when provider available)
 class ConsolidationPipeline {
   final SouvenirStore _store;
   final LlmCallback _llm;
   final SouvenirConfig _config;
+  final EmbeddingProvider? _embeddings;
 
-  ConsolidationPipeline(this._store, this._llm, this._config);
+  ConsolidationPipeline(
+    this._store,
+    this._llm,
+    this._config, [
+    this._embeddings,
+  ]);
 
   /// Runs the full consolidation pipeline.
   Future<ConsolidationResult> run() async {
@@ -94,6 +104,7 @@ class ConsolidationPipeline {
     var memoriesMerged = 0;
     var entitiesUpserted = 0;
     var relationshipsUpserted = 0;
+    final memoryIdsToEmbed = <_MemoryToEmbed>[];
 
     // 3. Process each session group.
     for (final entry in groups.entries) {
@@ -104,6 +115,7 @@ class ConsolidationPipeline {
         memoriesMerged += counts.merged;
         entitiesUpserted += counts.entities;
         relationshipsUpserted += counts.relationships;
+        memoryIdsToEmbed.addAll(counts.toEmbed);
       } catch (_) {
         // LLM failure or JSON parse error — skip this session.
         // Episodes remain unconsolidated for retry.
@@ -114,6 +126,20 @@ class ConsolidationPipeline {
     // 4. Importance decay.
     final decayed = await _applyDecay();
 
+    // 5. Generate embeddings for new/merged memories.
+    var embedded = 0;
+    if (_embeddings != null && memoryIdsToEmbed.isNotEmpty) {
+      for (final mem in memoryIdsToEmbed) {
+        try {
+          final vector = await _embeddings!.embed(mem.content);
+          await _store.updateMemoryEmbedding(mem.id, vector);
+          embedded++;
+        } catch (_) {
+          // Embedding failure is non-fatal — memory exists without embedding.
+        }
+      }
+    }
+
     return ConsolidationResult(
       sessionsProcessed: sessionsProcessed,
       sessionsSkipped: sessionsSkipped,
@@ -122,10 +148,11 @@ class ConsolidationPipeline {
       entitiesUpserted: entitiesUpserted,
       relationshipsUpserted: relationshipsUpserted,
       memoriesDecayed: decayed,
+      memoriesEmbedded: embedded,
     );
   }
 
-  Future<({int created, int merged, int entities, int relationships})>
+  Future<({int created, int merged, int entities, int relationships, List<_MemoryToEmbed> toEmbed})>
       _processSessionGroup(
     String sessionId,
     List<EpisodeEntity> episodes,
@@ -146,6 +173,7 @@ class ConsolidationPipeline {
     var merged = 0;
     var entitiesCount = 0;
     var relationshipsCount = 0;
+    final toEmbed = <_MemoryToEmbed>[];
 
     // Process facts → memories.
     final facts = extraction['facts'] as List<dynamic>? ?? [];
@@ -211,6 +239,7 @@ class ConsolidationPipeline {
           entityIds: {...oldEntityIds, ...entityIds}.toList(),
           sourceIds: {...oldSourceIds, ...episodeIds}.toList(),
         );
+        toEmbed.add(_MemoryToEmbed(match.id, content));
         merged++;
       } else {
         // Insert new memory.
@@ -221,6 +250,7 @@ class ConsolidationPipeline {
           sourceEpisodeIds: episodeIds,
         );
         await _store.insertMemory(memory);
+        toEmbed.add(_MemoryToEmbed(memory.id, content));
         created++;
       }
     }
@@ -269,6 +299,7 @@ class ConsolidationPipeline {
       merged: merged,
       entities: entitiesCount,
       relationships: relationshipsCount,
+      toEmbed: toEmbed,
     );
   }
 
@@ -297,4 +328,11 @@ class ConsolidationPipeline {
 
     return jsonDecode(text) as Map<String, dynamic>;
   }
+}
+
+/// Tracks a memory that needs embedding after session processing.
+class _MemoryToEmbed {
+  final String id;
+  final String content;
+  _MemoryToEmbed(this.id, this.content);
 }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:souvenir/souvenir.dart';
 import 'package:test/test.dart';
@@ -1065,4 +1066,217 @@ void main() {
       expect(context.estimatedTokens, 75);
     });
   });
+
+  // ── Embeddings ────────────────────────────────────────────────────────────
+
+  group('Embeddings', () {
+    late Souvenir souvenir;
+
+    setUp(() async {
+      souvenir = Souvenir(
+        config: const SouvenirConfig(
+          consolidationMinAge: Duration.zero,
+          flushThreshold: 100,
+        ),
+        embeddings: _MockEmbeddingProvider(),
+      );
+      await souvenir.initialize();
+
+      // Seed episodes and consolidate to create memories with embeddings.
+      for (final ep in [
+        Episode(
+          sessionId: 'ses_01',
+          type: EpisodeType.decision,
+          content: 'Decided to use dark mode for all interfaces',
+        ),
+        Episode(
+          sessionId: 'ses_01',
+          type: EpisodeType.toolResult,
+          content: 'Configured SQLite database for local storage',
+        ),
+      ]) {
+        await souvenir.record(ep);
+      }
+      await souvenir.flush();
+      await souvenir.consolidate(_mockLlm);
+    });
+
+    tearDown(() async {
+      await souvenir.close();
+    });
+
+    test('consolidation generates embeddings', () async {
+      // The mock LLM creates 2 memories. With embeddings enabled,
+      // both should have been embedded during consolidation.
+      // Verify by querying — vector signal should find results.
+      final results = await souvenir.recall(
+        'dark mode theme preferences',
+        options: const RecallOptions(
+          includeEpisodic: false,
+          includeSemantic: false,
+        ),
+      );
+      // With BM25 disabled and entity graph unlikely to match "dark mode
+      // theme preferences", vector search should find the "dark mode" memory.
+      expect(results, isNotEmpty);
+    });
+
+    test('consolidation reports embedded count', () async {
+      // Add more episodes and consolidate again.
+      await souvenir.record(Episode(
+        sessionId: 'ses_02',
+        type: EpisodeType.observation,
+        content: 'User requested dark mode toggle',
+      ));
+      await souvenir.flush();
+      final result = await souvenir.consolidate(_mockLlm);
+      expect(result.memoriesEmbedded, greaterThan(0));
+    });
+
+    test('vector results participate in RRF fusion', () async {
+      // Query that matches both BM25 and vector signals.
+      final results = await souvenir.recall('dark mode');
+      expect(results, isNotEmpty);
+      // At least one result should have a high score from multi-signal fusion.
+      expect(results.first.score, greaterThan(0));
+    });
+
+    test('vector search finds semantically similar memories', () async {
+      // The mock embedding provider maps "theme" and "mode" to similar vectors.
+      // Query with "theme" — should find "dark mode" memory via vector similarity.
+      await souvenir.record(Episode(
+        sessionId: 'ses_03',
+        type: EpisodeType.observation,
+        content: 'Something unrelated about networking',
+      ));
+      await souvenir.flush();
+
+      // Disable BM25 signals. Entity graph won't match "theme settings".
+      // Only vector search can find "dark mode" via similarity.
+      final results = await souvenir.recall(
+        'theme settings',
+        options: const RecallOptions(
+          includeEpisodic: false,
+          includeSemantic: false,
+        ),
+      );
+      // Vector should find "dark mode" memory via high cosine similarity.
+      final darkModeResult =
+          results.where((r) => r.content.contains('dark mode'));
+      expect(darkModeResult, isNotEmpty);
+    });
+
+    test('RecallSource.vector is attributed correctly', () async {
+      // Disable all signals except vector.
+      final results = await souvenir.recall(
+        'dark mode theme',
+        options: const RecallOptions(
+          includeEpisodic: false,
+          includeSemantic: false,
+        ),
+      );
+      // Filter to results that aren't from entity graph.
+      final vectorResults =
+          results.where((r) => r.source == RecallSource.vector);
+      expect(vectorResults, isNotEmpty);
+    });
+
+    test('works without embedding provider (backward compat)', () async {
+      // Create a souvenir without embedding provider.
+      final s2 = Souvenir(
+        config: const SouvenirConfig(
+          consolidationMinAge: Duration.zero,
+        ),
+      );
+      await s2.initialize();
+
+      await s2.record(Episode(
+        sessionId: 'ses_01',
+        type: EpisodeType.decision,
+        content: 'User prefers dark mode',
+      ));
+      await s2.flush();
+
+      // Consolidation should work without embeddings.
+      final result = await s2.consolidate(_mockLlm);
+      expect(result.memoriesCreated, greaterThan(0));
+      expect(result.memoriesEmbedded, 0);
+
+      // Recall should work without embeddings.
+      final results = await s2.recall('dark mode');
+      expect(results, isNotEmpty);
+
+      await s2.close();
+    });
+
+    test('embedding failure is non-fatal', () async {
+      // Create souvenir with a failing embedding provider.
+      final s2 = Souvenir(
+        config: const SouvenirConfig(
+          consolidationMinAge: Duration.zero,
+        ),
+        embeddings: _FailingEmbeddingProvider(),
+      );
+      await s2.initialize();
+
+      await s2.record(Episode(
+        sessionId: 'ses_01',
+        type: EpisodeType.decision,
+        content: 'User prefers dark mode',
+      ));
+      await s2.flush();
+
+      // Consolidation should still succeed — embedding failure is non-fatal.
+      final result = await s2.consolidate(_mockLlm);
+      expect(result.memoriesCreated, greaterThan(0));
+      expect(result.memoriesEmbedded, 0);
+
+      await s2.close();
+    });
+
+    test('embeddingTopK config is respected', () async {
+      const config = SouvenirConfig();
+      expect(config.embeddingTopK, 20);
+
+      const custom = SouvenirConfig(embeddingTopK: 5);
+      expect(custom.embeddingTopK, 5);
+    });
+  });
+}
+
+/// Mock embedding provider that produces deterministic vectors.
+///
+/// Texts about "dark"/"mode"/"theme" get high first dimension,
+/// texts about "sqlite"/"database" get high second dimension,
+/// texts about "user"/"prefer" get high third dimension.
+/// Similar texts produce similar vectors for cosine similarity.
+class _MockEmbeddingProvider implements EmbeddingProvider {
+  @override
+  int get dimensions => 3;
+
+  @override
+  Future<List<double>> embed(String text) async {
+    final lower = text.toLowerCase();
+    final v = [
+      lower.contains('dark') || lower.contains('mode') || lower.contains('theme')
+          ? 0.9
+          : 0.1,
+      lower.contains('sqlite') || lower.contains('database') ? 0.9 : 0.1,
+      lower.contains('user') || lower.contains('prefer') ? 0.9 : 0.1,
+    ];
+    // Normalize to unit vector for clean cosine similarity.
+    final norm = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    return [v[0] / norm, v[1] / norm, v[2] / norm];
+  }
+}
+
+/// Embedding provider that always throws.
+class _FailingEmbeddingProvider implements EmbeddingProvider {
+  @override
+  int get dimensions => 3;
+
+  @override
+  Future<List<double>> embed(String text) async {
+    throw Exception('Embedding service unavailable');
+  }
 }
