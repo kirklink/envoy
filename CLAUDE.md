@@ -119,9 +119,6 @@ envoy/
   lib/src/tool.dart         - Tool (abstract), ToolResult, ToolPermission
   lib/envoy.dart            - Public exports
   bin/envoy.dart            - CLI entrypoint
-  example/
-    validate_anthropic.dart - Phase 0: SDK smoke test
-    basic_tool_example.dart - Simple tool use demo
 
 envoy_tools/
   lib/src/
@@ -145,12 +142,6 @@ envoy_tools/
       stanza_memory_storage.dart - StanzaMemoryStorage (implements AgentMemory)
   lib/envoy_tools.dart      - Public exports
   test/envoy_tools_test.dart
-  example/
-    tools_example.dart        - Phase 2: write + run a Dart script
-    watch_example.dart        - onToolCall visibility demo
-    dynamic_tool_example.dart - Phase 3a: agent self-registers caesar_cipher
-    package_tool_example.dart - Phase 3a: agent uses package:http in a dynamic tool
-    persistence_example.dart  - Phase 3b+4a: session, registry, and agent memory (full demo)
 ```
 
 ## Commands
@@ -161,10 +152,8 @@ dart pub get
 dart test
 dart analyze
 
-# Run examples (requires ANTHROPIC_API_KEY)
+# Run with ANTHROPIC_API_KEY
 export ANTHROPIC_API_KEY=...                              # or: source ../.env
-dart run example/watch_example.dart                       # from envoy_tools/
-dart run example/dynamic_tool_example.dart                # from envoy_tools/
 ```
 
 ## Branch
@@ -387,7 +376,7 @@ class MyTool extends Tool {
 
 - **Persistence pattern**: `StanzaEnvoyStorage` is opt-in. Wire it via `EnvoyContext(onMessage:
   ..., messages: ...)` for session history, and the `onRegister` callback for tool registry.
-  The agent itself has no storage dependency — see `persistence_example.dart`.
+  The agent itself has no storage dependency.
 
 - **`DynamicTool.toMap()` / `DynamicTool.fromMap()`**: Round-trip serialization for storage.
   `inputSchema` is JSON-encoded as a string. `permission` is stored as the enum name.
