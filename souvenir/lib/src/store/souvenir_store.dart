@@ -385,6 +385,18 @@ class SouvenirStore {
     return result.rows.first['cnt'] as int;
   }
 
+  /// Returns all semantic memories ordered by importance (descending).
+  Future<List<MemoryEntity>> listMemories({int limit = 200}) async {
+    final result = await _db.rawExecute(
+      'SELECT * FROM memories ORDER BY importance DESC LIMIT :limit',
+      parameters: {':limit': limit},
+    );
+    return result.rows.map((row) {
+      final converted = _convertMemoryRow(row);
+      return _memories.fromRow(converted);
+    }).toList();
+  }
+
   // ── Embedding operations ──────────────────────────────────────────────────
 
   /// Stores an embedding vector for a memory as a BLOB.

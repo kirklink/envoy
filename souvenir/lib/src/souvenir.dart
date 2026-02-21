@@ -255,6 +255,29 @@ class Souvenir {
     );
   }
 
+  /// Lists all semantic memories, ordered by importance (descending).
+  Future<List<Memory>> listMemories({int limit = 200}) async {
+    _requireInitialized();
+    final entities = await _store!.listMemories(limit: limit);
+    return entities
+        .map((e) => Memory(
+              id: e.id,
+              content: e.content,
+              entityIds: e.entityIds != null
+                  ? (jsonDecode(e.entityIds!) as List).cast<String>()
+                  : [],
+              importance: e.importance,
+              createdAt: e.createdAt,
+              updatedAt: e.updatedAt,
+              sourceEpisodeIds: e.sourceIds != null
+                  ? (jsonDecode(e.sourceIds!) as List).cast<String>()
+                  : [],
+              accessCount: e.accessCount,
+              lastAccessed: e.lastAccessed,
+            ))
+        .toList();
+  }
+
   /// Number of episodes currently buffered in working memory.
   int get bufferSize => _buffer.length;
 
