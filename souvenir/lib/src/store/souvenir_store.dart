@@ -25,6 +25,27 @@ class SouvenirStore {
 
   SouvenirStore(this._db);
 
+  /// Sanitizes a raw text string for use in FTS5 MATCH queries.
+  ///
+  /// FTS5 interprets special characters (`.`, `:`, `(`, `)`, `-`, etc.) as
+  /// query syntax. Raw content strings — especially LLM-generated text —
+  /// contain these characters freely and cause parse errors.
+  ///
+  /// This method wraps each word in double quotes so FTS5 treats them as
+  /// literal tokens. Empty input returns an empty string (caller should
+  /// guard against passing it to MATCH).
+  static String _sanitizeFtsQuery(String raw) {
+    // Extract alphanumeric tokens, drop everything else.
+    final tokens = raw
+        .replaceAll(RegExp(r'[^\w\s]'), ' ')
+        .split(RegExp(r'\s+'))
+        .where((t) => t.isNotEmpty)
+        .toList();
+    if (tokens.isEmpty) return '""';
+    // Quote each token to prevent FTS5 syntax errors.
+    return tokens.map((t) => '"$t"').join(' ');
+  }
+
   // ── Initialization ────────────────────────────────────────────────────────
 
   /// Creates all tables and FTS5 indexes. Idempotent.
@@ -152,10 +173,11 @@ class SouvenirStore {
     int limit = 10,
     String? sessionId,
   }) async {
+    final sanitized = _sanitizeFtsQuery(query);
     final sessionFilter =
         sessionId != null ? 'AND e.session_id = :sessionId ' : '';
     final params = <String, dynamic>{
-      ':query': query,
+      ':query': sanitized,
       ':limit': limit,
       if (sessionId != null) ':sessionId': sessionId,
     };
@@ -323,6 +345,7 @@ class SouvenirStore {
     String query, {
     int limit = 10,
   }) async {
+    final sanitized = _sanitizeFtsQuery(query);
     final result = await _db.rawExecute(
       'SELECT m.*, bm25(${memoriesFts.tableName}) AS rank '
       'FROM memories m '
@@ -330,7 +353,7 @@ class SouvenirStore {
       'WHERE ${memoriesFts.tableName} MATCH :query '
       'ORDER BY rank '
       'LIMIT :limit',
-      parameters: {':query': query, ':limit': limit},
+      parameters: {':query': sanitized, ':limit': limit},
     );
 
     return result.rows.map((row) {

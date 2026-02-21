@@ -329,6 +329,10 @@ class ConsolidationPipeline {
   }
 
   /// Gathers recent episodes and asks the LLM to update personality.
+  ///
+  /// Skips the update if fewer than [SouvenirConfig.personalityMinEpisodes]
+  /// new episodes have accumulated since the last update — personality should
+  /// evolve from sustained experience, not single sessions.
   Future<bool> _updatePersonality() async {
     final lastUpdated = _personality!.lastUpdated;
     final recentEntities = await _store.recentEpisodes(limit: 100);
@@ -338,7 +342,7 @@ class ConsolidationPipeline {
         ? recentEntities.where((e) => e.timestamp.isAfter(lastUpdated))
         : recentEntities;
 
-    if (newEpisodes.isEmpty) return false;
+    if (newEpisodes.length < _config.personalityMinEpisodes) return false;
 
     // Build episode summary for the LLM.
     final buffer = StringBuffer();

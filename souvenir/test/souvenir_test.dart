@@ -1297,6 +1297,7 @@ void main() {
         config: const SouvenirConfig(
           consolidationMinAge: Duration.zero,
           flushThreshold: 100,
+          personalityMinEpisodes: 0,
         ),
       );
       await souvenir.initialize();
@@ -1342,6 +1343,7 @@ void main() {
         config: const SouvenirConfig(
           consolidationMinAge: Duration.zero,
           flushThreshold: 100,
+          personalityMinEpisodes: 0,
           minPersonalityDrift: 0.99, // Very high — almost never update.
         ),
         embeddings: _MockEmbeddingProvider(),
@@ -1370,6 +1372,7 @@ void main() {
         config: const SouvenirConfig(
           consolidationMinAge: Duration.zero,
           flushThreshold: 100,
+          personalityMinEpisodes: 0,
         ),
       );
       await souvenir.initialize();
@@ -1396,6 +1399,7 @@ void main() {
         config: const SouvenirConfig(
           consolidationMinAge: Duration.zero,
           flushThreshold: 100,
+          personalityMinEpisodes: 0,
         ),
       );
       await souvenir.initialize();

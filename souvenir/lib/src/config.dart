@@ -91,6 +91,14 @@ class SouvenirConfig {
   /// embeddings, every LLM-suggested personality update is applied.
   final double minPersonalityDrift;
 
+  /// Minimum number of new episodes since the last personality update before
+  /// the consolidation pipeline will attempt another update.
+  ///
+  /// Prevents jittery personality rewrites after every short session. The
+  /// agent needs a substantial body of new experience before its personality
+  /// should evolve.
+  final int personalityMinEpisodes;
+
   // ── Procedures ─────────────────────────────────────────────────────────
 
   /// Maximum token budget for procedure injection in [Souvenir.loadContext].
@@ -127,6 +135,7 @@ class SouvenirConfig {
     this.embeddingTopK = 20,
     // Personality.
     this.minPersonalityDrift = 0.1,
+    this.personalityMinEpisodes = 50,
     // Procedures.
     this.maxProcedureTokens = 2000,
   });
