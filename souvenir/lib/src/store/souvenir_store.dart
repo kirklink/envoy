@@ -100,6 +100,18 @@ class SouvenirStore {
         created_at TEXT NOT NULL
       )
     ''');
+
+    // Procedural memory: success/failure patterns per task type.
+    await _db.rawExecute('''
+      CREATE TABLE IF NOT EXISTS patterns (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_type  TEXT NOT NULL,
+        success    INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        notes      TEXT,
+        created_at TEXT NOT NULL
+      )
+    ''');
   }
 
   // ── Episode operations ────────────────────────────────────────────────────
@@ -651,6 +663,61 @@ class SouvenirStore {
       parameters: {':date': date.toUtc().toIso8601String()},
     );
     return result.isEmpty ? null : result.rows.first['content'] as String;
+  }
+
+  // ── Pattern operations ───────────────────────────────────────────────────
+
+  /// Records a task outcome (success or failure) for pattern tracking.
+  Future<void> insertPattern({
+    required String taskType,
+    required bool success,
+    required String sessionId,
+    String? notes,
+  }) async {
+    final now = DateTime.now().toUtc().toIso8601String();
+    await _db.rawExecute(
+      'INSERT INTO patterns (task_type, success, session_id, notes, created_at) '
+      'VALUES (:type, :success, :session, :notes, :created)',
+      parameters: {
+        ':type': taskType,
+        ':success': success ? 1 : 0,
+        ':session': sessionId,
+        ':notes': notes,
+        ':created': now,
+      },
+    );
+  }
+
+  /// Returns aggregate stats and recent failure notes for a task type.
+  Future<({int successes, int failures, List<String> recentNotes})>
+      getPatternStats(String taskType, {int noteLimit = 3}) async {
+    final countResult = await _db.rawExecute(
+      'SELECT '
+      'SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successes, '
+      'SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failures '
+      'FROM patterns WHERE task_type = :type',
+      parameters: {':type': taskType},
+    );
+
+    final row = countResult.rows.first;
+    final successes = (row['successes'] as num?)?.toInt() ?? 0;
+    final failures = (row['failures'] as num?)?.toInt() ?? 0;
+
+    final notesResult = await _db.rawExecute(
+      'SELECT notes FROM patterns '
+      'WHERE task_type = :type AND success = 0 AND notes IS NOT NULL '
+      'ORDER BY created_at DESC LIMIT :limit',
+      parameters: {':type': taskType, ':limit': noteLimit},
+    );
+
+    final recentNotes =
+        notesResult.rows.map((r) => r['notes'] as String).toList();
+
+    return (
+      successes: successes,
+      failures: failures,
+      recentNotes: recentNotes,
+    );
   }
 
   // ── Internal helpers ──────────────────────────────────────────────────────

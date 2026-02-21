@@ -11,4 +11,5 @@ export 'src/models/recall.dart';
 export 'src/models/relationship.dart';
 export 'src/models/session_context.dart';
 export 'src/personality.dart' show ResetLevel;
+export 'src/procedures.dart' show Procedure;
 export 'src/souvenir.dart';

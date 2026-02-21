@@ -91,6 +91,14 @@ class SouvenirConfig {
   /// embeddings, every LLM-suggested personality update is applied.
   final double minPersonalityDrift;
 
+  // ── Procedures ─────────────────────────────────────────────────────────
+
+  /// Maximum token budget for procedure injection in [Souvenir.loadContext].
+  ///
+  /// Prevents procedures from consuming the entire context window. Uses the
+  /// same chars/divisor heuristic as [contextTokenBudget].
+  final int maxProcedureTokens;
+
   const SouvenirConfig({
     // Write pipeline.
     this.flushThreshold = 50,
@@ -119,6 +127,8 @@ class SouvenirConfig {
     this.embeddingTopK = 20,
     // Personality.
     this.minPersonalityDrift = 0.1,
+    // Procedures.
+    this.maxProcedureTokens = 2000,
   });
 
   /// Returns the default importance for the given [episodeType] name.

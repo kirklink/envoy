@@ -11,6 +11,7 @@ import 'models/memory.dart';
 import 'models/recall.dart';
 import 'models/session_context.dart';
 import 'personality.dart';
+import 'procedures.dart';
 import 'retrieval.dart';
 import 'store/souvenir_store.dart';
 
@@ -33,10 +34,12 @@ class Souvenir {
   final SouvenirConfig _config;
   final EmbeddingProvider? _embeddings;
   final String? _identityText;
+  final Map<String, String>? _proceduresMap;
 
   StanzaSqlite? _db;
   SouvenirStore? _store;
   PersonalityManager? _personality;
+  ProcedureManager? _procedureManager;
   final List<Episode> _buffer = [];
 
   /// Creates a souvenir instance backed by a SQLite database at [dbPath].
@@ -46,15 +49,19 @@ class Souvenir {
   /// and automatic embedding generation during consolidation.
   /// Pass [identityText] to enable the personality system — immutable core
   /// identity + mutable personality that drifts with consolidation.
+  /// Pass [procedures] as a map of task type → procedure text to enable
+  /// procedural memory injection in [loadContext].
   Souvenir({
     String? dbPath,
     SouvenirConfig config = const SouvenirConfig(),
     EmbeddingProvider? embeddings,
     String? identityText,
+    Map<String, String>? procedures,
   })  : _dbPath = dbPath,
         _config = config,
         _embeddings = embeddings,
-        _identityText = identityText;
+        _identityText = identityText,
+        _proceduresMap = procedures;
 
   /// Opens the database and creates tables. Idempotent — safe on every startup.
   Future<void> initialize() async {
@@ -72,6 +79,10 @@ class Souvenir {
       embeddings: _embeddings,
     );
     await _personality!.initialize();
+
+    // Initialize procedural memory.
+    _procedureManager = ProcedureManager(_store!, _config);
+    _procedureManager!.initialize(_proceduresMap);
   }
 
   /// Flushes the buffer and closes the database.
@@ -178,11 +189,15 @@ class Souvenir {
             ))
         .toList();
 
+    // Match procedures to session intent.
+    final matchedProcedures = _procedureManager?.matchFor(sessionIntent) ?? [];
+
     return SessionContext(
       memories: memories,
       episodes: episodes,
       personality: _personality?.personality,
       identity: _personality?.identity,
+      procedures: matchedProcedures,
     );
   }
 
@@ -219,6 +234,25 @@ class Souvenir {
       throw StateError('Personality system not configured.');
     }
     await _personality!.reset(level, llm: llm, date: date);
+  }
+
+  /// Records a task outcome for procedural pattern tracking.
+  ///
+  /// Stores success/failure counts per [taskType] in SQLite. Use
+  /// [ProcedureManager.patternSummary] to retrieve the track record.
+  Future<void> recordOutcome({
+    required String taskType,
+    required bool success,
+    required String sessionId,
+    String? notes,
+  }) async {
+    _requireInitialized();
+    await _procedureManager!.recordOutcome(
+      taskType: taskType,
+      success: success,
+      sessionId: sessionId,
+      notes: notes,
+    );
   }
 
   /// Number of episodes currently buffered in working memory.
