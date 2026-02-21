@@ -1,69 +1,87 @@
-import 'package:stanza/annotations.dart';
+import 'package:stanza/stanza.dart';
 
 part 'stanza_entities.g.dart';
 
 // ── Tool registry ─────────────────────────────────────────────────────────────
 
 /// Persisted record of a dynamically registered tool.
-@StanzaEntity(name: 'envoy_tools', snakeCase: true)
+@Entity(name: 'envoy_tools')
 class ToolRecordEntity {
-  @StanzaField(readOnly: true)
-  late int id;
+  @PrimaryKey(autoIncrement: true)
+  final int id;
 
   /// Unique tool name (snake_case).
-  late String name;
+  @Field(unique: true)
+  final String name;
 
-  late String description;
+  final String description;
 
   /// ToolPermission.name (compute, readFile, writeFile, network, process).
-  late String permission;
+  final String permission;
 
   /// Absolute path to the Dart script on disk.
-  late String scriptPath;
+  final String scriptPath;
 
   /// JSON-encoded inputSchema map.
-  late String inputSchema;
+  final String inputSchema;
 
-  late DateTime createdAt;
+  @Field(defaultValue: 'now()')
+  final DateTime createdAt;
 
-  ToolRecordEntity();
-
-  static final _$ToolRecordEntityTable $table = _$ToolRecordEntityTable();
+  const ToolRecordEntity({
+    required this.id,
+    required this.name,
+    required this.description,
+    required this.permission,
+    required this.scriptPath,
+    required this.inputSchema,
+    required this.createdAt,
+  });
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 /// A single agent session (wraps one or many [EnvoyAgent.run] calls).
-@StanzaEntity(name: 'envoy_sessions', snakeCase: true)
+@Entity(name: 'envoy_sessions')
 class SessionEntity {
   /// Caller-supplied or generated session ID (hex string).
-  late String id;
+  @PrimaryKey(autoIncrement: false)
+  @Field(type: 'text')
+  final String id;
 
-  late DateTime createdAt;
+  @Field(defaultValue: 'now()')
+  final DateTime createdAt;
 
-  SessionEntity();
-
-  static final _$SessionEntityTable $table = _$SessionEntityTable();
+  const SessionEntity({
+    required this.id,
+    required this.createdAt,
+  });
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
 /// A single message within a session's conversation history.
-@StanzaEntity(name: 'envoy_messages', snakeCase: true)
+@Entity(name: 'envoy_messages')
 class MessageEntity {
-  @StanzaField(readOnly: true)
-  late int id;
+  @PrimaryKey(autoIncrement: true)
+  final int id;
 
-  late String sessionId;
+  @References(SessionEntity, onDelete: 'CASCADE')
+  final String sessionId;
 
   /// JSON-encoded anthropic.Message (via toJson/fromJson).
-  late String content;
+  final String content;
 
-  late int sortOrder;
+  final int sortOrder;
 
-  late DateTime createdAt;
+  @Field(defaultValue: 'now()')
+  final DateTime createdAt;
 
-  MessageEntity();
-
-  static final _$MessageEntityTable $table = _$MessageEntityTable();
+  const MessageEntity({
+    required this.id,
+    required this.sessionId,
+    required this.content,
+    required this.sortOrder,
+    required this.createdAt,
+  });
 }

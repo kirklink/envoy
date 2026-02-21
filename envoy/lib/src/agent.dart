@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:anthropic_sdk_dart/anthropic_sdk_dart.dart' as anthropic;
 
+import 'agent_event.dart';
 import 'context.dart';
 import 'memory.dart';
 import 'run_result.dart';
@@ -67,6 +69,23 @@ class EnvoyAgent {
   final AgentMemory? _memory;
   final String _systemPrompt;
 
+  final StreamController<AgentEvent> _eventController =
+      StreamController<AgentEvent>.broadcast();
+
+  /// Stream of events emitted during agent runs.
+  ///
+  /// This is a broadcast stream — multiple listeners can subscribe.
+  /// Events are emitted for: task start, tool call start/complete,
+  /// message additions, and run completion/error.
+  Stream<AgentEvent> get events => _eventController.stream;
+
+  void _emit(AgentEvent event) {
+    if (!_eventController.isClosed) _eventController.add(event);
+  }
+
+  static String _preview(String s, [int max = 200]) =>
+      s.length > max ? '${s.substring(0, max)}...' : s;
+
   EnvoyAgent(
     this.config, {
     List<Tool> tools = const [],
@@ -109,6 +128,8 @@ class EnvoyAgent {
   /// Check [RunResult.outcome] to distinguish success from exhaustion.
   Future<RunResult> run(String task) async {
     _context.addUser(task);
+    _emit(AgentStarted(task));
+    _emit(AgentMessageAdded('user', _preview(task)));
 
     final stopwatch = Stopwatch()..start();
     var tokens = TokenUsage.zero;
@@ -124,6 +145,17 @@ class EnvoyAgent {
       } on anthropic.AnthropicClientException catch (e) {
         // Non-retryable API error, or retries exhausted.
         stopwatch.stop();
+        final errorMsg = 'API error ${e.code}: ${e.message}';
+        _emit(AgentError(errorMsg));
+        _emit(AgentCompleted(
+          response: '',
+          outcome: RunOutcome.error,
+          iterations: iterationsUsed,
+          duration: stopwatch.elapsed,
+          tokenUsage: tokens,
+          toolCallCount: toolCallLog.length,
+          errorMessage: errorMsg,
+        ));
         return RunResult(
           response: '',
           outcome: RunOutcome.error,
@@ -131,7 +163,7 @@ class EnvoyAgent {
           duration: stopwatch.elapsed,
           tokenUsage: tokens,
           toolCalls: toolCallLog,
-          errorMessage: 'API error ${e.code}: ${e.message}',
+          errorMessage: errorMsg,
         );
       }
       tokens = tokens + _extractUsage(response);
@@ -145,6 +177,15 @@ class EnvoyAgent {
         // Model returned a text response — we are done.
         _context.addAssistant(response.content);
         stopwatch.stop();
+        _emit(AgentMessageAdded('assistant', _preview(response.content.text)));
+        _emit(AgentCompleted(
+          response: response.content.text,
+          outcome: RunOutcome.completed,
+          iterations: iterationsUsed,
+          duration: stopwatch.elapsed,
+          tokenUsage: tokens,
+          toolCallCount: toolCallLog.length,
+        ));
         return RunResult(
           response: response.content.text,
           outcome: RunOutcome.completed,
@@ -166,6 +207,12 @@ class EnvoyAgent {
       for (final toolUse in toolUses) {
         final tool = _tools[toolUse.name];
         if (tool == null) {
+          _emit(AgentToolCallStarted(toolUse.name, toolUse.input,
+              reasoning: reasoning));
+          _emit(AgentToolCallCompleted(toolUse.name,
+              success: false,
+              output: 'unknown tool "${toolUse.name}"',
+              duration: Duration.zero));
           toolCallLog.add(ToolCallRecord(
             name: toolUse.name,
             input: toolUse.input,
@@ -185,31 +232,42 @@ class EnvoyAgent {
 
         final validationError = await tool.validateInput(toolUse.input);
         if (validationError != null) {
+          final errMsg = validationError.error ?? 'validation error';
+          _emit(AgentToolCallStarted(toolUse.name, toolUse.input,
+              reasoning: reasoning));
+          _emit(AgentToolCallCompleted(toolUse.name,
+              success: false, output: errMsg, duration: Duration.zero));
           onToolCall?.call(toolUse.name, toolUse.input, validationError);
           toolCallLog.add(ToolCallRecord(
             name: toolUse.name,
             input: toolUse.input,
             success: false,
-            output: validationError.error ?? 'validation error',
+            output: errMsg,
             duration: Duration.zero,
             reasoning: reasoning,
           ));
           reasoning = null;
           _context.addToolResult(
             toolUse.id,
-            validationError.error ?? 'validation error',
+            errMsg,
             isError: true,
           );
           continue;
         }
 
+        _emit(AgentToolCallStarted(toolUse.name, toolUse.input,
+            reasoning: reasoning));
         final toolStopwatch = Stopwatch()..start();
         final result = await tool.execute(toolUse.input);
         toolStopwatch.stop();
 
-        onToolCall?.call(toolUse.name, toolUse.input, result);
         final output =
             result.success ? result.output : (result.error ?? 'unknown error');
+        _emit(AgentToolCallCompleted(toolUse.name,
+            success: result.success,
+            output: _preview(output, 500),
+            duration: toolStopwatch.elapsed));
+        onToolCall?.call(toolUse.name, toolUse.input, result);
         toolCallLog.add(ToolCallRecord(
           name: toolUse.name,
           input: toolUse.input,
@@ -228,6 +286,14 @@ class EnvoyAgent {
     }
 
     stopwatch.stop();
+    _emit(AgentCompleted(
+      response: '',
+      outcome: RunOutcome.maxIterations,
+      iterations: iterationsUsed,
+      duration: stopwatch.elapsed,
+      tokenUsage: tokens,
+      toolCallCount: toolCallLog.length,
+    ));
     return RunResult(
       response: '',
       outcome: RunOutcome.maxIterations,

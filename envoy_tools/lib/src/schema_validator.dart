@@ -29,31 +29,31 @@ class SchemaValidator {
       final isRequired = required.contains(fieldName);
       final value = input[fieldName];
 
-      final validator = ValidateValue();
-      if (isRequired) validator.isRequired();
+      final rules = <Rule>[];
+      if (isRequired) rules.add(const Required());
 
       // Only add type rules when a value is present; Required() handles
       // the absent-but-required case above.
       if (value != null) {
         switch (fieldSchema['type'] as String?) {
           case 'string':
-            validator.isString();
+            rules.add(const IsString());
           case 'integer':
-            validator.isInt();
+            rules.add(const IsInt());
           case 'number':
-            validator.isNum();
+            rules.add(const IsNum());
           case 'boolean':
-            validator.isBoolean();
+            rules.add(const IsBool());
           case 'array':
-            validator.isList();
+            rules.add(const IsList());
           case 'object':
-            validator.isMap();
+            rules.add(const IsMap());
         }
       }
 
-      final result = validator.from(value, fieldName);
-      if (result.$isNotValid) {
-        errors.addAll(result.$errors.map((e) => '  $fieldName: ${e.message}'));
+      final (fieldErrors, _) = checkRules(value, rules);
+      for (final msg in fieldErrors) {
+        errors.add('  $fieldName: $msg');
       }
     }
 

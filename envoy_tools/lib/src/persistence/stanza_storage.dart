@@ -7,12 +7,17 @@ import 'package:stanza/stanza.dart';
 import '../dynamic_tool.dart';
 import 'stanza_entities.dart';
 
+/// Table descriptors — instantiated once and reused across queries.
+final _tools = $ToolRecordEntityTable();
+final _sessions = $SessionEntityTable();
+final _messages = $MessageEntityTable();
+
 /// Stanza-backed persistence for Envoy — tool registry and session history.
 ///
 /// ## Setup
 ///
 /// ```dart
-/// final storage = StanzaEnvoyStorage(Stanza.url('postgresql://...'));
+/// final storage = StanzaEnvoyStorage(db); // db is a DatabaseAdapter
 /// await storage.initialize();           // creates tables once
 ///
 /// final sessionId = await storage.ensureSession();   // new session
@@ -40,13 +45,13 @@ import 'stanza_entities.dart';
 /// ));
 /// ```
 class StanzaEnvoyStorage {
-  final Stanza _stanza;
+  final DatabaseAdapter _db;
 
   /// Tracks the next sort_order value for a given session.
   /// Initialized from the DB message count when a session is loaded.
   int _nextSortOrder = 0;
 
-  StanzaEnvoyStorage(this._stanza);
+  StanzaEnvoyStorage(this._db);
 
   // ── Schema ──────────────────────────────────────────────────────────────────
 
@@ -54,7 +59,7 @@ class StanzaEnvoyStorage {
   ///
   /// Safe to call on every startup — uses `CREATE TABLE IF NOT EXISTS`.
   Future<void> initialize() async {
-    await _stanza.rawExecute('''
+    await _db.rawExecute('''
       CREATE TABLE IF NOT EXISTS envoy_tools (
         id          SERIAL PRIMARY KEY,
         name        TEXT NOT NULL UNIQUE,
@@ -66,14 +71,14 @@ class StanzaEnvoyStorage {
       )
     ''');
 
-    await _stanza.rawExecute('''
+    await _db.rawExecute('''
       CREATE TABLE IF NOT EXISTS envoy_sessions (
         id         TEXT PRIMARY KEY,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     ''');
 
-    await _stanza.rawExecute('''
+    await _db.rawExecute('''
       CREATE TABLE IF NOT EXISTS envoy_messages (
         id         SERIAL PRIMARY KEY,
         session_id TEXT NOT NULL REFERENCES envoy_sessions(id) ON DELETE CASCADE,
@@ -88,9 +93,7 @@ class StanzaEnvoyStorage {
 
   /// Loads all persisted dynamic tools from the registry.
   Future<List<DynamicTool>> loadTools() async {
-    final result = await _stanza.execute<ToolRecordEntity>(
-      SelectQuery(ToolRecordEntity.$table)..selectStar(),
-    );
+    final result = await _db.execute(SelectQuery(_tools));
     return result.entities.map((e) => DynamicTool.fromMap({
           'name': e.name,
           'description': e.description,
@@ -102,24 +105,25 @@ class StanzaEnvoyStorage {
 
   /// Persists a dynamic tool, replacing an existing record with the same name.
   Future<void> saveTool(DynamicTool tool) async {
-    final entity = ToolRecordEntity()
-      ..name = tool.name
-      ..description = tool.description
-      ..permission = tool.permission.name
-      ..scriptPath = tool.scriptPath
-      ..inputSchema = jsonEncode(tool.inputSchema)
-      ..createdAt = DateTime.now().toUtc();
+    final row = ToolRecordEntityInsert(
+      name: tool.name,
+      description: tool.description,
+      permission: tool.permission.name,
+      scriptPath: tool.scriptPath,
+      inputSchema: jsonEncode(tool.inputSchema),
+    ).toRow();
 
-    await _stanza.execute(
-      InsertQuery(ToolRecordEntity.$table)
-        ..insertEntity<ToolRecordEntity>(entity)
-        ..onConflict(
-          target: [ToolRecordEntity.$table.name],
-          doUpdate: (set) => set
-            ..column(ToolRecordEntity.$table.description).string(entity.description)
-            ..column(ToolRecordEntity.$table.permission).string(entity.permission)
-            ..column(ToolRecordEntity.$table.scriptPath).string(entity.scriptPath)
-            ..column(ToolRecordEntity.$table.inputSchema).string(entity.inputSchema),
+    await _db.execute(
+      InsertQuery(_tools)
+        .values(row)
+        .onConflict(
+          target: [_tools.name],
+          doUpdate: {
+            'description': tool.description,
+            'permission': tool.permission.name,
+            'script_path': tool.scriptPath,
+            'input_schema': jsonEncode(tool.inputSchema),
+          },
         ),
     );
   }
@@ -129,15 +133,13 @@ class StanzaEnvoyStorage {
   ///
   /// Returns an empty list when no tools match or the registry is empty.
   Future<List<Map<String, String>>> searchTools(String query) async {
-    final t = ToolRecordEntity.$table;
-    final result = await _stanza.execute<ToolRecordEntity>(
-      SelectQuery(t)
-        ..selectStar()
-        ..where(t.name).fullTextMatches(query)
-        ..or(t.description).fullTextMatches(query),
+    final result = await _db.execute(
+      SelectQuery(_tools)
+        .where((t) => t.name.fullTextMatches(query) |
+                      t.description.fullTextMatches(query)),
     );
     return result.entities
-        .map((e) => {
+        .map((e) => <String, String>{
               'name': e.name,
               'description': e.description,
               'permission': e.permission,
@@ -153,10 +155,9 @@ class StanzaEnvoyStorage {
   /// Omit (or pass `null`) to start a fresh session.
   Future<String> ensureSession([String? sessionId]) async {
     if (sessionId != null) {
-      final result = await _stanza.execute<SessionEntity>(
-        SelectQuery(SessionEntity.$table)
-          ..selectStar()
-          ..where(SessionEntity.$table.id).matches(sessionId, caseSensitive: true),
+      final result = await _db.execute(
+        SelectQuery(_sessions)
+          .where((t) => t.id.equals(sessionId)),
       );
       if (result.isNotEmpty) {
         _nextSortOrder = await _messageCount(sessionId);
@@ -165,12 +166,9 @@ class StanzaEnvoyStorage {
     }
 
     final id = sessionId ?? _generateId();
-    final entity = SessionEntity()
-      ..id = id
-      ..createdAt = DateTime.now().toUtc();
-
-    await _stanza.execute(
-      InsertQuery(SessionEntity.$table)..insertEntity<SessionEntity>(entity),
+    await _db.execute(
+      InsertQuery(_sessions)
+        .values(SessionEntityInsert(id: id).toRow()),
     );
     _nextSortOrder = 0;
     return id;
@@ -180,12 +178,10 @@ class StanzaEnvoyStorage {
 
   /// Loads all messages for [sessionId] in conversation order.
   Future<List<anthropic.Message>> loadMessages(String sessionId) async {
-    final result = await _stanza.execute<MessageEntity>(
-      SelectQuery(MessageEntity.$table)
-        ..selectStar()
-        ..where(MessageEntity.$table.sessionId)
-            .matches(sessionId, caseSensitive: true)
-        ..orderBy(MessageEntity.$table.sortOrder),
+    final result = await _db.execute(
+      SelectQuery(_messages)
+        .where((t) => t.sessionId.equals(sessionId))
+        .orderBy((t) => t.sortOrder.asc()),
     );
     return result.entities.map((e) {
       final json = jsonDecode(e.content) as Map<String, dynamic>;
@@ -201,27 +197,26 @@ class StanzaEnvoyStorage {
     String sessionId,
     anthropic.Message message,
   ) async {
-    final entity = MessageEntity()
-      ..sessionId = sessionId
-      ..content = jsonEncode(message.toJson())
-      ..sortOrder = _nextSortOrder++
-      ..createdAt = DateTime.now().toUtc();
-
-    await _stanza.execute(
-      InsertQuery(MessageEntity.$table)..insertEntity<MessageEntity>(entity),
+    await _db.execute(
+      InsertQuery(_messages).values(
+        MessageEntityInsert(
+          sessionId: sessionId,
+          content: jsonEncode(message.toJson()),
+          sortOrder: _nextSortOrder++,
+        ).toRow(),
+      ),
     );
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
   Future<int> _messageCount(String sessionId) async {
-    final result = await _stanza.execute<MessageEntity>(
-      SelectQuery(MessageEntity.$table)
-        ..selectFields([MessageEntity.$table.id.count().rename('cnt')])
-        ..where(MessageEntity.$table.sessionId)
-            .matches(sessionId, caseSensitive: true),
+    final result = await _db.rawQuery(
+      'SELECT COUNT(*) AS cnt FROM envoy_messages WHERE session_id = @p0',
+      parameters: {'p0': sessionId},
+      mapper: (row) => row['cnt'] as int,
     );
-    return result.aggregates.firstOrNull?['cnt'] as int? ?? 0;
+    return result.firstOrNull ?? 0;
   }
 
   static String _generateId() {

@@ -3,6 +3,9 @@ import 'package:stanza/stanza.dart';
 
 import 'memory_entity.dart';
 
+/// Table descriptor — instantiated once and reused across queries.
+final _memory = $MemoryEntityTable();
+
 /// Stanza-backed implementation of [AgentMemory].
 ///
 /// Persists agent self-memory entries to the `envoy_memory` table.
@@ -11,7 +14,7 @@ import 'memory_entity.dart';
 /// ## Setup
 ///
 /// ```dart
-/// final memory = StanzaMemoryStorage(Stanza.url('postgresql://...'));
+/// final memory = StanzaMemoryStorage(db); // db is a DatabaseAdapter
 /// await memory.initialize();
 ///
 /// final agent = EnvoyAgent(config, memory: memory, ...);
@@ -24,16 +27,16 @@ import 'memory_entity.dart';
 /// for (final e in entries) print('[${e.type}] ${e.content}');
 /// ```
 class StanzaMemoryStorage implements AgentMemory {
-  final Stanza _stanza;
+  final DatabaseAdapter _db;
 
-  StanzaMemoryStorage(this._stanza);
+  StanzaMemoryStorage(this._db);
 
   /// Creates the `envoy_memory` table if it does not already exist.
   ///
   /// Safe to call on every startup (idempotent).
   @override
   Future<void> initialize() async {
-    await _stanza.rawExecute('''
+    await _db.rawExecute('''
       CREATE TABLE IF NOT EXISTS envoy_memory (
         id         SERIAL PRIMARY KEY,
         type       TEXT NOT NULL,
@@ -46,13 +49,13 @@ class StanzaMemoryStorage implements AgentMemory {
   /// Persists a single memory entry.
   @override
   Future<void> remember(MemoryEntry entry) async {
-    final entity = MemoryEntity()
-      ..type = entry.type
-      ..content = entry.content
-      ..createdAt = entry.createdAt;
-
-    await _stanza.execute(
-      InsertQuery(MemoryEntity.$table)..insertEntity<MemoryEntity>(entity),
+    await _db.execute(
+      InsertQuery(_memory).values(
+        MemoryEntityInsert(
+          type: entry.type,
+          content: entry.content,
+        ).toRow(),
+      ),
     );
   }
 
@@ -61,22 +64,18 @@ class StanzaMemoryStorage implements AgentMemory {
   /// Results are ordered by recency (newest first).
   @override
   Future<List<MemoryEntry>> recall({String? type, String? query}) async {
-    final t = MemoryEntity.$table;
-    final q = SelectQuery(t)
-      ..selectStar()
-      ..orderBy(t.createdAt, descending: true);
+    var q = SelectQuery(_memory)
+        .orderBy((t) => t.createdAt.desc());
 
     if (type != null && query != null) {
-      q
-        ..where(t.type).matches(type, caseSensitive: false)
-        ..and(t.content).fullTextMatches(query);
+      q = q.where((t) => t.type.ilike(type) & t.content.fullTextMatches(query));
     } else if (type != null) {
-      q..where(t.type).matches(type, caseSensitive: false);
+      q = q.where((t) => t.type.ilike(type));
     } else if (query != null) {
-      q..where(t.content).fullTextMatches(query);
+      q = q.where((t) => t.content.fullTextMatches(query));
     }
 
-    final result = await _stanza.execute<MemoryEntity>(q);
+    final result = await _db.execute(q);
     return result.entities
         .map((e) => MemoryEntry(
               type: e.type,

@@ -1,4 +1,4 @@
-import 'package:stanza/annotations.dart';
+import 'package:stanza/stanza.dart';
 
 part 'memory_entity.g.dart';
 
@@ -6,20 +6,24 @@ part 'memory_entity.g.dart';
 ///
 /// Written by [EnvoyAgent.reflect] after a session completes.
 /// The [type] is a free-form label chosen by the agent.
-@StanzaEntity(name: 'envoy_memory', snakeCase: true)
+@Entity(name: 'envoy_memory')
 class MemoryEntity {
-  @StanzaField(readOnly: true)
-  late int id;
+  @PrimaryKey(autoIncrement: true)
+  final int id;
 
   /// Agent-chosen category label (e.g. 'success', 'failure', 'curiosity').
-  late String type;
+  final String type;
 
   /// The memory content, in the agent's own words.
-  late String content;
+  final String content;
 
-  late DateTime createdAt;
+  @Field(defaultValue: 'now()')
+  final DateTime createdAt;
 
-  MemoryEntity();
-
-  static final _$MemoryEntityTable $table = _$MemoryEntityTable();
+  const MemoryEntity({
+    required this.id,
+    required this.type,
+    required this.content,
+    required this.createdAt,
+  });
 }

@@ -21,7 +21,7 @@ import 'dart:io';
 
 import 'package:envoy/envoy.dart';
 import 'package:envoy_tools/envoy_tools.dart';
-import 'package:stanza/stanza.dart';
+import 'package:stanza_postgres/stanza_postgres.dart';
 
 /// Returns true only when the tool is registered AND its script file exists.
 ///
