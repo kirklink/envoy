@@ -1,15 +1,17 @@
 library souvenir;
 
-export 'src/config.dart';
-export 'src/consolidation.dart' show ConsolidationResult;
+// v2 engine.
+export 'src/engine.dart';
+
+// v2 interfaces and types.
+export 'src/budget.dart';
+export 'src/episode_store.dart';
+export 'src/labeled_recall.dart';
+export 'src/memory_component.dart';
+export 'src/mixer.dart';
+export 'src/tokenizer.dart';
+
+// Carried from v1 (unchanged).
 export 'src/embedding_provider.dart';
 export 'src/llm_callback.dart';
-export 'src/models/entity.dart';
 export 'src/models/episode.dart';
-export 'src/models/memory.dart';
-export 'src/models/recall.dart';
-export 'src/models/relationship.dart';
-export 'src/models/session_context.dart';
-export 'src/personality.dart' show ResetLevel;
-export 'src/procedures.dart' show Procedure;
-export 'src/souvenir.dart';

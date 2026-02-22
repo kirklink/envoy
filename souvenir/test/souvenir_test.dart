@@ -1,1635 +1,915 @@
-import 'dart:convert';
-import 'dart:math' as math;
-
 import 'package:souvenir/souvenir.dart';
 import 'package:test/test.dart';
 
-/// Mock LLM that returns predetermined consolidation JSON.
-Future<String> _mockLlm(String system, String user) async {
-  return jsonEncode({
-    'facts': [
-      {
-        'content': 'User prefers dark mode in all applications',
-        'entities': [
-          {'name': 'User', 'type': 'person'},
-          {'name': 'dark mode', 'type': 'preference'},
-        ],
-        'importance': 0.9,
-      },
-      {
-        'content': 'Project uses SQLite for local storage',
-        'entities': [
-          {'name': 'Project', 'type': 'project'},
-          {'name': 'SQLite', 'type': 'concept'},
-        ],
-        'importance': 0.7,
-      },
-    ],
-    'relationships': [
-      {
-        'from': 'Project',
-        'to': 'SQLite',
-        'relation': 'uses',
-        'confidence': 0.95,
-      },
-    ],
+// ── Test helpers ─────────────────────────────────────────────────────────────
+
+/// Stub component with configurable behavior and call tracking.
+class StubComponent extends MemoryComponent {
+  @override
+  final String name;
+
+  bool initialized = false;
+  bool closed = false;
+  int consolidateCallCount = 0;
+  int recallCallCount = 0;
+  List<Episode>? lastConsolidationEpisodes;
+  String? lastRecallQuery;
+  ComponentBudget? lastConsolidationBudget;
+  ComponentBudget? lastRecallBudget;
+
+  List<LabeledRecall> recallItems;
+  ConsolidationReport Function(List<Episode> episodes)? onConsolidate;
+  Duration? delay;
+
+  StubComponent({
+    required this.name,
+    this.recallItems = const [],
+    this.onConsolidate,
+    this.delay,
   });
+
+  @override
+  Future<void> initialize() async {
+    if (delay != null) await Future.delayed(delay!);
+    initialized = true;
+  }
+
+  @override
+  Future<ConsolidationReport> consolidate(
+    List<Episode> episodes,
+    LlmCallback llm,
+    ComponentBudget budget,
+  ) async {
+    if (delay != null) await Future.delayed(delay!);
+    consolidateCallCount++;
+    lastConsolidationEpisodes = episodes;
+    lastConsolidationBudget = budget;
+    if (onConsolidate != null) return onConsolidate!(episodes);
+    return ConsolidationReport(
+      componentName: name,
+      episodesConsumed: episodes.length,
+    );
+  }
+
+  @override
+  Future<List<LabeledRecall>> recall(
+    String query,
+    ComponentBudget budget,
+  ) async {
+    if (delay != null) await Future.delayed(delay!);
+    recallCallCount++;
+    lastRecallQuery = query;
+    lastRecallBudget = budget;
+    return recallItems;
+  }
+
+  @override
+  Future<void> close() async {
+    if (delay != null) await Future.delayed(delay!);
+    closed = true;
+  }
 }
 
-/// Mock LLM that returns malformed JSON.
-Future<String> _brokenLlm(String system, String user) async {
-  return 'this is not json at all {{{';
+Future<String> _noopLlm(String system, String user) async => '';
+
+Episode _episode(String content, {String sessionId = 'ses_01'}) {
+  return Episode(
+    sessionId: sessionId,
+    type: EpisodeType.observation,
+    content: content,
+  );
 }
 
-/// Mock LLM that throws.
-Future<String> _failingLlm(String system, String user) async {
-  throw Exception('LLM service unavailable');
+Budget _testBudget({
+  int total = 1000,
+  Map<String, int> allocation = const {},
+  Tokenizer? tokenizer,
+}) {
+  return Budget(
+    totalTokens: total,
+    allocation: allocation,
+    tokenizer: tokenizer ?? const ApproximateTokenizer(),
+  );
 }
+
+Souvenir _engine({
+  List<MemoryComponent>? components,
+  Budget? budget,
+  Mixer? mixer,
+  EpisodeStore? store,
+  int flushThreshold = 50,
+}) {
+  return Souvenir(
+    components: components ?? [],
+    budget: budget ?? _testBudget(),
+    mixer: mixer ?? const WeightedMixer(),
+    store: store,
+    flushThreshold: flushThreshold,
+  );
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
 
 void main() {
-  // ── Episode model ─────────────────────────────────────────────────────────
+  // ── ApproximateTokenizer ─────────────────────────────────────────────────
 
-  group('Episode', () {
-    test('auto-generates ULID if id not provided', () {
-      final ep = Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.conversation,
-        content: 'hello',
-      );
-      expect(ep.id, isNotEmpty);
-      expect(ep.id.length, 26); // ULID is 26 chars
+  group('ApproximateTokenizer', () {
+    const tokenizer = ApproximateTokenizer();
+
+    test('empty string returns 0', () {
+      expect(tokenizer.count(''), 0);
     });
 
-    test('uses provided id when given', () {
-      final ep = Episode(
-        id: 'custom-id',
-        sessionId: 'ses_01',
-        type: EpisodeType.conversation,
-        content: 'hello',
-      );
-      expect(ep.id, 'custom-id');
+    test('single character returns 1', () {
+      expect(tokenizer.count('a'), 1);
     });
 
-    test('defaults timestamp to now', () {
-      final before = DateTime.now();
-      final ep = Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.conversation,
-        content: 'hello',
-      );
-      final after = DateTime.now();
-      expect(
-          ep.timestamp.isAfter(before.subtract(Duration(seconds: 1))), true);
-      expect(ep.timestamp.isBefore(after.add(Duration(seconds: 1))), true);
+    test('4 characters returns 1', () {
+      expect(tokenizer.count('abcd'), 1);
     });
 
-    test('defaults importance from EpisodeType', () {
-      expect(
-        Episode(sessionId: 's', type: EpisodeType.conversation, content: 'c')
-            .importance,
-        0.4,
-      );
-      expect(
-        Episode(sessionId: 's', type: EpisodeType.toolResult, content: 'c')
-            .importance,
-        0.8,
-      );
-      expect(
-        Episode(sessionId: 's', type: EpisodeType.userDirective, content: 'c')
-            .importance,
-        0.95,
-      );
+    test('5 characters returns 2', () {
+      expect(tokenizer.count('abcde'), 2);
     });
 
-    test('allows importance override', () {
-      final ep = Episode(
-        sessionId: 's',
-        type: EpisodeType.conversation,
-        content: 'c',
-        importance: 0.99,
-      );
-      expect(ep.importance, 0.99);
+    test('100 characters returns 25', () {
+      expect(tokenizer.count('a' * 100), 25);
+    });
+
+    test('whitespace counts normally', () {
+      expect(tokenizer.count('    '), 1);
+    });
+
+    test('long text scales linearly', () {
+      expect(tokenizer.count('x' * 10000), 2500);
     });
   });
 
-  // ── Memory model ────────────────────────────────────────────────────────
+  // ── ComponentBudget ──────────────────────────────────────────────────────
 
-  group('Memory', () {
-    test('auto-generates ULID', () {
-      final m = Memory(content: 'test fact');
-      expect(m.id, isNotEmpty);
-      expect(m.id.length, 26);
+  group('ComponentBudget', () {
+    test('starts with zero usedTokens', () {
+      final b = ComponentBudget(
+        allocatedTokens: 100,
+        tokenizer: const ApproximateTokenizer(),
+      );
+      expect(b.usedTokens, 0);
+      expect(b.remainingTokens, 100);
+      expect(b.isOverBudget, isFalse);
     });
 
-    test('defaults timestamps to now', () {
-      final before = DateTime.now();
-      final m = Memory(content: 'test');
-      final after = DateTime.now();
-      expect(m.createdAt.isAfter(before.subtract(Duration(seconds: 1))), true);
-      expect(m.updatedAt.isBefore(after.add(Duration(seconds: 1))), true);
+    test('consume counts tokens and records usage', () {
+      final b = ComponentBudget(
+        allocatedTokens: 100,
+        tokenizer: const ApproximateTokenizer(),
+      );
+      final count = b.consume('abcdefgh'); // 8 chars → 2 tokens
+      expect(count, 2);
+      expect(b.usedTokens, 2);
+      expect(b.remainingTokens, 98);
     });
 
-    test('defaults importance to 0.5', () {
-      expect(Memory(content: 'test').importance, 0.5);
+    test('multiple consumes accumulate', () {
+      final b = ComponentBudget(
+        allocatedTokens: 100,
+        tokenizer: const ApproximateTokenizer(),
+      );
+      b.consume('abcd'); // 1 token
+      b.consume('abcdefgh'); // 2 tokens
+      expect(b.usedTokens, 3);
+      expect(b.remainingTokens, 97);
+    });
+
+    test('isOverBudget when exceeded', () {
+      final b = ComponentBudget(
+        allocatedTokens: 1,
+        tokenizer: const ApproximateTokenizer(),
+      );
+      b.consume('abcdefghijklmnop'); // 16 chars → 4 tokens
+      expect(b.isOverBudget, isTrue);
+      expect(b.remainingTokens, -3);
+    });
+
+    test('isOverBudget false at exact allocation', () {
+      final b = ComponentBudget(
+        allocatedTokens: 2,
+        tokenizer: const ApproximateTokenizer(),
+      );
+      b.consume('abcdefgh'); // 8 chars → 2 tokens
+      expect(b.isOverBudget, isFalse);
+      expect(b.remainingTokens, 0);
+    });
+
+    test('consume empty string adds 0', () {
+      final b = ComponentBudget(
+        allocatedTokens: 100,
+        tokenizer: const ApproximateTokenizer(),
+      );
+      final count = b.consume('');
+      expect(count, 0);
+      expect(b.usedTokens, 0);
     });
   });
 
-  // ── Entity model ──────────────────────────────────────────────────────────
+  // ── Budget ───────────────────────────────────────────────────────────────
 
-  group('Entity', () {
-    test('auto-generates ULID', () {
-      final e = Entity(name: 'SQLite', type: EntityType.concept);
-      expect(e.id, isNotEmpty);
-      expect(e.id.length, 26);
+  group('Budget', () {
+    test('forComponent returns correct allocation', () {
+      final budget = _testBudget(
+        allocation: {'task': 500, 'durable': 300},
+      );
+      final cb = budget.forComponent('task');
+      expect(cb.allocatedTokens, 500);
     });
 
-    test('EntityType has expected values', () {
-      expect(EntityType.values, hasLength(5));
-      expect(EntityType.values.map((t) => t.name),
-          containsAll(['person', 'project', 'concept', 'preference', 'fact']));
+    test('forComponent returns 0 for unknown component', () {
+      final budget = _testBudget(allocation: {'task': 500});
+      final cb = budget.forComponent('unknown');
+      expect(cb.allocatedTokens, 0);
+    });
+
+    test('each forComponent call returns fresh ComponentBudget', () {
+      final budget = _testBudget(allocation: {'task': 500});
+      final a = budget.forComponent('task');
+      a.consume('some text');
+      final b = budget.forComponent('task');
+      expect(b.usedTokens, 0); // Independent of a.
+    });
+
+    test('forComponent shares the same tokenizer', () {
+      const tokenizer = ApproximateTokenizer();
+      final budget = Budget(
+        totalTokens: 1000,
+        allocation: {'a': 500},
+        tokenizer: tokenizer,
+      );
+      final cb = budget.forComponent('a');
+      expect(identical(cb.tokenizer, tokenizer), isTrue);
     });
   });
 
-  // ── Relationship model ────────────────────────────────────────────────────
+  // ── ConsolidationReport ──────────────────────────────────────────────────
 
-  group('Relationship', () {
-    test('defaults confidence to 1.0', () {
-      final r = Relationship(
-        fromEntityId: 'a',
-        toEntityId: 'b',
-        relation: 'uses',
-      );
-      expect(r.confidence, 1.0);
+  group('ConsolidationReport', () {
+    test('defaults all counters to 0', () {
+      const r = ConsolidationReport(componentName: 'test');
+      expect(r.itemsCreated, 0);
+      expect(r.itemsMerged, 0);
+      expect(r.itemsDecayed, 0);
+      expect(r.episodesConsumed, 0);
     });
 
-    test('defaults updatedAt to now', () {
-      final before = DateTime.now();
-      final r = Relationship(
-        fromEntityId: 'a',
-        toEntityId: 'b',
-        relation: 'uses',
+    test('accepts explicit counter values', () {
+      const r = ConsolidationReport(
+        componentName: 'test',
+        itemsCreated: 3,
+        itemsMerged: 2,
+        itemsDecayed: 1,
+        episodesConsumed: 5,
       );
+      expect(r.componentName, 'test');
+      expect(r.itemsCreated, 3);
+      expect(r.itemsMerged, 2);
+      expect(r.itemsDecayed, 1);
+      expect(r.episodesConsumed, 5);
+    });
+  });
+
+  // ── LabeledRecall ────────────────────────────────────────────────────────
+
+  group('LabeledRecall', () {
+    test('stores all fields', () {
+      final r = LabeledRecall(
+        componentName: 'task',
+        content: 'some memory',
+        score: 0.85,
+        metadata: {'key': 'value'},
+      );
+      expect(r.componentName, 'task');
+      expect(r.content, 'some memory');
+      expect(r.score, 0.85);
+      expect(r.metadata, {'key': 'value'});
+    });
+
+    test('metadata defaults to null', () {
+      const r = LabeledRecall(
+        componentName: 'task',
+        content: 'test',
+        score: 0.5,
+      );
+      expect(r.metadata, isNull);
+    });
+  });
+
+  // ── BudgetUsage ──────────────────────────────────────────────────────────
+
+  group('BudgetUsage', () {
+    test('overBudget false when used <= allocated', () {
+      const u = BudgetUsage(componentName: 'a', allocated: 100, used: 100);
+      expect(u.overBudget, isFalse);
+    });
+
+    test('overBudget true when used > allocated', () {
+      const u = BudgetUsage(componentName: 'a', allocated: 100, used: 101);
+      expect(u.overBudget, isTrue);
+    });
+
+    test('overBudget false when used is 0', () {
+      const u = BudgetUsage(componentName: 'a', allocated: 100, used: 0);
+      expect(u.overBudget, isFalse);
+    });
+  });
+
+  // ── WeightedMixer ────────────────────────────────────────────────────────
+
+  group('WeightedMixer', () {
+    test('empty input returns empty result', () {
+      const mixer = WeightedMixer();
+      final result = mixer.mix({}, _testBudget());
+      expect(result.items, isEmpty);
+      expect(result.componentUsage, isEmpty);
+      expect(result.totalTokensUsed, 0);
+    });
+
+    test('single component single item passes through', () {
+      const mixer = WeightedMixer();
+      final result = mixer.mix({
+        'task': [
+          LabeledRecall(componentName: 'task', content: 'hello', score: 0.9),
+        ],
+      }, _testBudget(allocation: {'task': 500}));
+
+      expect(result.items, hasLength(1));
+      expect(result.items.first.content, 'hello');
+      expect(result.totalTokensUsed, greaterThan(0));
+    });
+
+    test('multiplies scores by component weight', () {
+      const mixer = WeightedMixer(weights: {'high': 2.0, 'low': 0.5});
+      // 'low' has raw score 0.9 but weight 0.5 → adjusted 0.45
+      // 'high' has raw score 0.5 but weight 2.0 → adjusted 1.0
+      final result = mixer.mix({
+        'low': [
+          LabeledRecall(componentName: 'low', content: 'low item', score: 0.9),
+        ],
+        'high': [
+          LabeledRecall(
+              componentName: 'high', content: 'high item', score: 0.5),
+        ],
+      }, _testBudget(allocation: {'high': 500, 'low': 500}));
+
+      expect(result.items.first.componentName, 'high');
+      expect(result.items.last.componentName, 'low');
+    });
+
+    test('sorts by adjusted score descending', () {
+      const mixer = WeightedMixer();
+      final result = mixer.mix({
+        'a': [
+          LabeledRecall(componentName: 'a', content: 'low', score: 0.1),
+          LabeledRecall(componentName: 'a', content: 'high', score: 0.9),
+          LabeledRecall(componentName: 'a', content: 'mid', score: 0.5),
+        ],
+      }, _testBudget(allocation: {'a': 500}));
+
+      expect(result.items.map((i) => i.content).toList(),
+          ['high', 'mid', 'low']);
+    });
+
+    test('takes items until total budget exhausted', () {
+      const mixer = WeightedMixer();
+      // Each 'xxxx' is 4 chars → 1 token. Budget = 2 tokens.
+      final result = mixer.mix({
+        'a': [
+          LabeledRecall(componentName: 'a', content: 'aaaa', score: 0.9),
+          LabeledRecall(componentName: 'a', content: 'bbbb', score: 0.8),
+          LabeledRecall(componentName: 'a', content: 'cccc', score: 0.7),
+        ],
+      }, _testBudget(total: 2, allocation: {'a': 10}));
+
+      expect(result.items, hasLength(2));
+      expect(result.totalTokensUsed, 2);
+    });
+
+    test('always includes at least one item even if over budget', () {
+      const mixer = WeightedMixer();
+      // 'long content here!!' is 19 chars → 5 tokens. Budget = 1 token.
+      final result = mixer.mix({
+        'a': [
+          LabeledRecall(
+              componentName: 'a', content: 'long content here!!', score: 0.9),
+        ],
+      }, _testBudget(total: 1, allocation: {'a': 1}));
+
+      expect(result.items, hasLength(1));
+      expect(result.totalTokensUsed, greaterThan(1));
+    });
+
+    test('unweighted component defaults to weight 1.0', () {
+      const mixer = WeightedMixer(weights: {'a': 2.0});
+      // 'b' not in weights → defaults to 1.0
+      final result = mixer.mix({
+        'a': [
+          LabeledRecall(componentName: 'a', content: 'aaaa', score: 0.5),
+        ],
+        'b': [
+          LabeledRecall(componentName: 'b', content: 'bbbb', score: 0.5),
+        ],
+      }, _testBudget(allocation: {'a': 500, 'b': 500}));
+
+      // 'a' adjusted = 0.5 * 2.0 = 1.0, 'b' adjusted = 0.5 * 1.0 = 0.5
+      expect(result.items.first.componentName, 'a');
+    });
+
+    test('reports per-component budget usage', () {
+      const mixer = WeightedMixer();
+      final result = mixer.mix({
+        'a': [
+          LabeledRecall(componentName: 'a', content: 'aaaa', score: 0.9),
+        ],
+        'b': [
+          LabeledRecall(componentName: 'b', content: 'bbbb', score: 0.8),
+        ],
+      }, _testBudget(allocation: {'a': 100, 'b': 200}));
+
+      expect(result.componentUsage, contains('a'));
+      expect(result.componentUsage, contains('b'));
+      expect(result.componentUsage['a']!.allocated, 100);
+      expect(result.componentUsage['b']!.allocated, 200);
+      expect(result.componentUsage['a']!.used, greaterThan(0));
+      expect(result.componentUsage['b']!.used, greaterThan(0));
+    });
+
+    test('reports totalTokensUsed accurately', () {
+      const mixer = WeightedMixer();
+      // 'abcd' = 4 chars → 1 token each
+      final result = mixer.mix({
+        'a': [
+          LabeledRecall(componentName: 'a', content: 'abcd', score: 0.9),
+          LabeledRecall(componentName: 'a', content: 'efgh', score: 0.8),
+        ],
+      }, _testBudget(allocation: {'a': 500}));
+
+      expect(result.totalTokensUsed, 2);
+    });
+
+    test('over-budget component flagged in usage', () {
+      const mixer = WeightedMixer();
+      // Component 'a' allocated 0 tokens but has items selected.
+      final result = mixer.mix({
+        'a': [
+          LabeledRecall(componentName: 'a', content: 'abcd', score: 0.9),
+        ],
+      }, _testBudget(allocation: {'a': 0}));
+
+      expect(result.componentUsage['a']!.overBudget, isTrue);
+    });
+
+    test('component with no selected items gets zero usage', () {
+      const mixer = WeightedMixer();
+      // Budget is 1 token. Only 'a' fits. 'b' is excluded.
+      final result = mixer.mix({
+        'a': [
+          LabeledRecall(componentName: 'a', content: 'abcd', score: 0.9),
+        ],
+        'b': [
+          LabeledRecall(componentName: 'b', content: 'efgh', score: 0.1),
+        ],
+      }, _testBudget(total: 1, allocation: {'a': 100, 'b': 100}));
+
+      expect(result.componentUsage['b']!.used, 0);
+    });
+
+    test('multiple components items interleaved by score', () {
+      const mixer = WeightedMixer();
+      final result = mixer.mix({
+        'a': [
+          LabeledRecall(componentName: 'a', content: 'a1', score: 0.9),
+          LabeledRecall(componentName: 'a', content: 'a2', score: 0.5),
+        ],
+        'b': [
+          LabeledRecall(componentName: 'b', content: 'b1', score: 0.7),
+          LabeledRecall(componentName: 'b', content: 'b2', score: 0.3),
+        ],
+      }, _testBudget(allocation: {'a': 500, 'b': 500}));
+
+      final names = result.items.map((i) => i.content).toList();
+      expect(names, ['a1', 'b1', 'a2', 'b2']);
+    });
+  });
+
+  // ── InMemoryEpisodeStore ─────────────────────────────────────────────────
+
+  group('InMemoryEpisodeStore', () {
+    test('insert adds episodes', () async {
+      final store = InMemoryEpisodeStore();
+      await store.insert([_episode('a'), _episode('b')]);
+      expect(store.length, 2);
+    });
+
+    test('fetchUnconsolidated returns all initially', () async {
+      final store = InMemoryEpisodeStore();
+      await store.insert([_episode('a'), _episode('b')]);
+      final unconsolidated = await store.fetchUnconsolidated();
+      expect(unconsolidated, hasLength(2));
+    });
+
+    test('markConsolidated excludes from fetch', () async {
+      final store = InMemoryEpisodeStore();
+      final ep = _episode('a');
+      await store.insert([ep, _episode('b')]);
+      await store.markConsolidated([ep]);
+      final unconsolidated = await store.fetchUnconsolidated();
+      expect(unconsolidated, hasLength(1));
+      expect(unconsolidated.first.content, 'b');
+    });
+
+    test('unconsolidatedCount tracks correctly', () async {
+      final store = InMemoryEpisodeStore();
+      final episodes = [_episode('a'), _episode('b'), _episode('c')];
+      await store.insert(episodes);
+      expect(store.unconsolidatedCount, 3);
+      await store.markConsolidated([episodes[0]]);
+      expect(store.unconsolidatedCount, 2);
+    });
+  });
+
+  // ── Engine lifecycle ─────────────────────────────────────────────────────
+
+  group('Engine lifecycle', () {
+    test('initialize calls initialize on all components', () async {
+      final a = StubComponent(name: 'a');
+      final b = StubComponent(name: 'b');
+      final engine = _engine(components: [a, b]);
+      await engine.initialize();
+      expect(a.initialized, isTrue);
+      expect(b.initialized, isTrue);
+    });
+
+    test('close calls close on all components', () async {
+      final a = StubComponent(name: 'a');
+      final b = StubComponent(name: 'b');
+      final engine = _engine(components: [a, b]);
+      await engine.initialize();
+      await engine.close();
+      expect(a.closed, isTrue);
+      expect(b.closed, isTrue);
+    });
+
+    test('close flushes buffer before closing', () async {
+      final store = InMemoryEpisodeStore();
+      final engine = _engine(store: store);
+      await engine.initialize();
+      await engine.record(_episode('buffered'));
+      expect(store.length, 0); // Still in buffer.
+      await engine.close();
+      expect(store.length, 1); // Flushed by close.
+    });
+
+    test('record before initialize throws StateError', () {
+      final engine = _engine();
       expect(
-          r.updatedAt.isAfter(before.subtract(Duration(seconds: 1))), true);
+        () => engine.record(_episode('test')),
+        throwsStateError,
+      );
+    });
+
+    test('consolidate before initialize throws StateError', () {
+      final engine = _engine();
+      expect(
+        () => engine.consolidate(_noopLlm),
+        throwsStateError,
+      );
+    });
+
+    test('recall before initialize throws StateError', () {
+      final engine = _engine();
+      expect(
+        () => engine.recall('test'),
+        throwsStateError,
+      );
     });
   });
 
-  // ── Write pipeline ────────────────────────────────────────────────────────
+  // ── Episode recording ────────────────────────────────────────────────────
 
-  group('Write pipeline', () {
-    late Souvenir souvenir;
-
-    setUp(() async {
-      souvenir = Souvenir(config: const SouvenirConfig(flushThreshold: 3));
-      await souvenir.initialize();
-    });
-
-    tearDown(() async {
-      await souvenir.close();
-    });
-
+  group('Episode recording', () {
     test('record adds to buffer', () async {
-      await souvenir.record(Episode(
-        sessionId: 's',
-        type: EpisodeType.observation,
-        content: 'buffered',
-      ));
-      expect(souvenir.bufferSize, 1);
+      final engine = _engine();
+      await engine.initialize();
+      await engine.record(_episode('a'));
+      expect(engine.bufferSize, 1);
     });
 
-    test('flush writes buffer to database', () async {
-      await souvenir.record(Episode(
-        sessionId: 's',
-        type: EpisodeType.observation,
-        content: 'test content for flush',
-      ));
-      expect(souvenir.bufferSize, 1);
-
-      await souvenir.flush();
-      expect(souvenir.bufferSize, 0);
-
-      final results = await souvenir.recall('flush');
-      expect(results, isNotEmpty);
-    });
-
-    test('auto-flushes when buffer reaches threshold', () async {
-      await souvenir.record(Episode(
-        sessionId: 's',
-        type: EpisodeType.observation,
-        content: 'first episode about databases',
-      ));
-      await souvenir.record(Episode(
-        sessionId: 's',
-        type: EpisodeType.observation,
-        content: 'second episode about databases',
-      ));
-      expect(souvenir.bufferSize, 2);
-
-      await souvenir.record(Episode(
-        sessionId: 's',
-        type: EpisodeType.observation,
-        content: 'third episode about databases',
-      ));
-      expect(souvenir.bufferSize, 0);
-
-      final results = await souvenir.recall('databases');
-      expect(results.length, 3);
-    });
-
-    test('close flushes remaining buffer', () async {
-      final s2 =
-          Souvenir(config: const SouvenirConfig(flushThreshold: 100));
-      await s2.initialize();
-
-      await s2.record(Episode(
-        sessionId: 's',
-        type: EpisodeType.observation,
-        content: 'should survive close',
-      ));
-      expect(s2.bufferSize, 1);
-
-      await s2.close();
-      expect(s2.bufferSize, 0);
+    test('flush writes buffer to store and clears it', () async {
+      final store = InMemoryEpisodeStore();
+      final engine = _engine(store: store);
+      await engine.initialize();
+      await engine.record(_episode('a'));
+      await engine.record(_episode('b'));
+      await engine.flush();
+      expect(engine.bufferSize, 0);
+      expect(store.length, 2);
     });
 
     test('flush is no-op when buffer is empty', () async {
-      await souvenir.flush(); // should not throw
+      final store = InMemoryEpisodeStore();
+      final engine = _engine(store: store);
+      await engine.initialize();
+      await engine.flush();
+      expect(store.length, 0);
+    });
+
+    test('auto-flush at threshold', () async {
+      final store = InMemoryEpisodeStore();
+      final engine = _engine(store: store, flushThreshold: 3);
+      await engine.initialize();
+      await engine.record(_episode('a'));
+      await engine.record(_episode('b'));
+      expect(store.length, 0); // Not yet.
+      await engine.record(_episode('c'));
+      expect(store.length, 3); // Flushed at threshold.
+      expect(engine.bufferSize, 0);
+    });
+
+    test('manual flush before threshold', () async {
+      final store = InMemoryEpisodeStore();
+      final engine = _engine(store: store, flushThreshold: 100);
+      await engine.initialize();
+      await engine.record(_episode('a'));
+      expect(store.length, 0);
+      await engine.flush();
+      expect(store.length, 1);
     });
   });
 
-  // ── FTS5 search ───────────────────────────────────────────────────────────
+  // ── Parallel consolidation ───────────────────────────────────────────────
 
-  group('FTS5 search', () {
-    late Souvenir souvenir;
-
-    setUp(() async {
-      souvenir = Souvenir();
-      await souvenir.initialize();
-
-      final episodes = [
-        Episode(
-          sessionId: 'ses_01',
-          type: EpisodeType.toolResult,
-          content: 'Successfully compiled the Dart application',
-        ),
-        Episode(
-          sessionId: 'ses_01',
-          type: EpisodeType.error,
-          content: 'Failed to connect to the PostgreSQL database',
-        ),
-        Episode(
-          sessionId: 'ses_01',
-          type: EpisodeType.decision,
-          content:
-              'Decided to use SQLite instead of PostgreSQL for local storage',
-        ),
-        Episode(
-          sessionId: 'ses_02',
-          type: EpisodeType.conversation,
-          content: 'User asked about authentication patterns',
-        ),
-        Episode(
-          sessionId: 'ses_02',
-          type: EpisodeType.toolResult,
-          content: 'Wrote a JWT authentication middleware in Dart',
-        ),
-      ];
-
-      for (final ep in episodes) {
-        await souvenir.record(ep);
-      }
-      await souvenir.flush();
-    });
-
-    tearDown(() async {
-      await souvenir.close();
-    });
-
-    test('returns matching results', () async {
-      final results = await souvenir.recall('PostgreSQL');
-      expect(results.length, 2);
-      for (final r in results) {
-        expect(r.content.toLowerCase(), contains('postgresql'));
-      }
-    });
-
-    test('excludes non-matching results', () async {
-      final results = await souvenir.recall('authentication');
-      expect(results.length, 2);
-      for (final r in results) {
-        expect(r.content.toLowerCase(), contains('authenticat'));
-      }
-    });
-
-    test('returns empty list for no matches', () async {
-      final results = await souvenir.recall('kubernetes');
-      expect(results, isEmpty);
-    });
-
-    test('results have positive scores', () async {
-      final results = await souvenir.recall('Dart');
-      expect(results, isNotEmpty);
-      for (final r in results) {
-        expect(r.score, greaterThan(0));
-      }
-    });
-
-    test('results are attributed as episodic', () async {
-      final results = await souvenir.recall('Dart');
-      for (final r in results) {
-        expect(r.source, RecallSource.episodic);
-      }
-    });
-
-    test('results include importance from episode type', () async {
-      final results = await souvenir.recall('PostgreSQL database');
-      expect(results, isNotEmpty);
-      final errorResult = results.firstWhere((r) => r.content.contains('Failed'));
-      expect(errorResult.importance, 0.8);
-    });
-
-    test('porter stemming matches word variants', () async {
-      final results = await souvenir.recall('compile');
-      expect(results, isNotEmpty);
-      expect(results.first.content, contains('compiled'));
-    });
-  });
-
-  // ── RecallOptions ─────────────────────────────────────────────────────────
-
-  group('RecallOptions', () {
-    late Souvenir souvenir;
-
-    setUp(() async {
-      souvenir = Souvenir();
-      await souvenir.initialize();
-
-      for (var i = 0; i < 15; i++) {
-        await souvenir.record(Episode(
-          sessionId: i < 10 ? 'ses_a' : 'ses_b',
-          type: EpisodeType.observation,
-          content: 'observation about memory system design iteration $i',
-        ));
-      }
-      await souvenir.flush();
-    });
-
-    tearDown(() async {
-      await souvenir.close();
-    });
-
-    test('topK limits results', () async {
-      final results = await souvenir.recall(
-        'memory',
-        options: const RecallOptions(topK: 3),
+  group('Parallel consolidation', () {
+    test('all components receive the same episodes', () async {
+      final a = StubComponent(name: 'a');
+      final b = StubComponent(name: 'b');
+      final engine = _engine(
+        components: [a, b],
+        budget: _testBudget(allocation: {'a': 500, 'b': 500}),
       );
-      expect(results.length, 3);
-    });
+      await engine.initialize();
+      await engine.record(_episode('ep1'));
+      await engine.record(_episode('ep2'));
+      await engine.flush();
 
-    test('sessionId scopes search', () async {
-      final results = await souvenir.recall(
-        'memory',
-        options: const RecallOptions(topK: 20, sessionId: 'ses_b'),
-      );
-      expect(results.length, 5);
-    });
-  });
+      await engine.consolidate(_noopLlm);
 
-  // ── Idempotency ───────────────────────────────────────────────────────────
-
-  group('Idempotency', () {
-    test('initialize is safe to call multiple times', () async {
-      final souvenir = Souvenir();
-      await souvenir.initialize();
-      await souvenir.initialize();
-      await souvenir.close();
-    });
-  });
-
-  // ── Consolidation ─────────────────────────────────────────────────────────
-
-  group('Consolidation', () {
-    late Souvenir souvenir;
-
-    setUp(() async {
-      souvenir = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          flushThreshold: 100,
-        ),
-      );
-      await souvenir.initialize();
-
-      // Seed episodes across two sessions.
-      for (final ep in [
-        Episode(
-          sessionId: 'ses_01',
-          type: EpisodeType.decision,
-          content: 'Decided to use dark mode for all interfaces',
-        ),
-        Episode(
-          sessionId: 'ses_01',
-          type: EpisodeType.toolResult,
-          content: 'Configured SQLite database for local storage',
-        ),
-        Episode(
-          sessionId: 'ses_02',
-          type: EpisodeType.observation,
-          content: 'User mentioned preference for Dart language',
-        ),
-      ]) {
-        await souvenir.record(ep);
-      }
-      await souvenir.flush();
-    });
-
-    tearDown(() async {
-      await souvenir.close();
-    });
-
-    test('creates memories from episodes', () async {
-      final result = await souvenir.consolidate(_mockLlm);
-      expect(result.memoriesCreated, greaterThan(0));
-    });
-
-    test('marks episodes as consolidated', () async {
-      await souvenir.consolidate(_mockLlm);
-
-      // Second consolidation finds no unconsolidated episodes.
-      final result2 = await souvenir.consolidate(_mockLlm);
-      expect(result2.sessionsProcessed, 0);
-      expect(result2.memoriesCreated, 0);
-    });
-
-    test('creates entities', () async {
-      final result = await souvenir.consolidate(_mockLlm);
-      expect(result.entitiesUpserted, greaterThan(0));
-    });
-
-    test('creates relationships', () async {
-      final result = await souvenir.consolidate(_mockLlm);
-      expect(result.relationshipsUpserted, greaterThan(0));
-    });
-
-    test('LLM failure skips session gracefully', () async {
-      final result = await souvenir.consolidate(_failingLlm);
-      expect(result.sessionsSkipped, greaterThan(0));
-      expect(result.memoriesCreated, 0);
-    });
-
-    test('malformed JSON skips session gracefully', () async {
-      final result = await souvenir.consolidate(_brokenLlm);
-      expect(result.sessionsSkipped, greaterThan(0));
-      expect(result.memoriesCreated, 0);
-    });
-
-    test('consolidationMinAge is respected', () async {
-      // Use a config with a very long min age.
-      final s2 = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration(days: 365),
-        ),
-      );
-      await s2.initialize();
-
-      await s2.record(Episode(
-        sessionId: 'ses',
-        type: EpisodeType.observation,
-        content: 'recent episode that should not be consolidated',
-      ));
-      await s2.flush();
-
-      final result = await s2.consolidate(_mockLlm);
-      expect(result.sessionsProcessed, 0);
-      expect(result.memoriesCreated, 0);
-
-      await s2.close();
-    });
-
-    test('returns counters', () async {
-      final result = await souvenir.consolidate(_mockLlm);
-      expect(result.sessionsProcessed, greaterThan(0));
-      expect(result.sessionsSkipped, 0);
-    });
-  });
-
-  // ── Memory merging ────────────────────────────────────────────────────────
-
-  group('Memory merging', () {
-    late Souvenir souvenir;
-
-    setUp(() async {
-      souvenir = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          mergeThreshold: 0.0, // Always merge if any match found.
-        ),
-      );
-      await souvenir.initialize();
-    });
-
-    tearDown(() async {
-      await souvenir.close();
-    });
-
-    test('duplicate fact merges into existing memory', () async {
-      // First consolidation creates memories.
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'User prefers dark mode',
-      ));
-      await souvenir.flush();
-      final r1 = await souvenir.consolidate(_mockLlm);
-      expect(r1.memoriesCreated, greaterThan(0));
-
-      // Second consolidation with similar content should merge.
-      await souvenir.record(Episode(
-        sessionId: 'ses_02',
-        type: EpisodeType.decision,
-        content: 'Confirmed dark mode preference again',
-      ));
-      await souvenir.flush();
-      final r2 = await souvenir.consolidate(_mockLlm);
-      expect(r2.memoriesMerged, greaterThan(0));
-    });
-  });
-
-  // ── Memory FTS5 search ────────────────────────────────────────────────────
-
-  group('Memory FTS5 search', () {
-    late Souvenir souvenir;
-
-    setUp(() async {
-      souvenir = Souvenir(
-        config: const SouvenirConfig(consolidationMinAge: Duration.zero),
-      );
-      await souvenir.initialize();
-
-      // Seed and consolidate to create semantic memories.
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'Chose to implement authentication with JWT tokens',
-      ));
-      await souvenir.flush();
-      await souvenir.consolidate(_mockLlm);
-    });
-
-    tearDown(() async {
-      await souvenir.close();
-    });
-
-    test('recall returns semantic results', () async {
-      // The mock LLM always returns facts about "dark mode" and "SQLite".
-      final results = await souvenir.recall('dark mode');
-      final semanticResults =
-          results.where((r) => r.source == RecallSource.semantic);
-      expect(semanticResults, isNotEmpty);
-    });
-
-    test('semantic results have positive scores', () async {
-      final results = await souvenir.recall('SQLite');
-      final semanticResults =
-          results.where((r) => r.source == RecallSource.semantic);
-      for (final r in semanticResults) {
-        expect(r.score, greaterThan(0));
-      }
-    });
-
-    test('recall returns both episodic and semantic results', () async {
-      // "SQLite" appears in both the episode content and the mock LLM facts.
-      // Insert an episode about SQLite too.
-      await souvenir.record(Episode(
-        sessionId: 'ses_02',
-        type: EpisodeType.observation,
-        content: 'SQLite performs well for local development',
-      ));
-      await souvenir.flush();
-
-      final results = await souvenir.recall('SQLite');
-      final sources = results.map((r) => r.source).toSet();
-      expect(sources, contains(RecallSource.episodic));
-      expect(sources, contains(RecallSource.semantic));
-    });
-
-    test('topK limits combined results', () async {
-      final results = await souvenir.recall(
-        'SQLite',
-        options: const RecallOptions(topK: 1),
-      );
-      expect(results.length, 1);
-    });
-  });
-
-  // ── Importance decay ──────────────────────────────────────────────────────
-
-  group('Importance decay', () {
-    late Souvenir souvenir;
-
-    setUp(() async {
-      souvenir = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          decayInactivePeriod: Duration.zero, // Decay everything.
-          importanceDecayRate: 0.5,
-        ),
-      );
-      await souvenir.initialize();
-
-      // Create a memory via consolidation.
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'Architecture decision about caching strategy',
-      ));
-      await souvenir.flush();
-      await souvenir.consolidate(_mockLlm);
-    });
-
-    tearDown(() async {
-      await souvenir.close();
-    });
-
-    test('decay is applied during consolidation', () async {
-      // First consolidation already ran in setUp, which applied decay.
-      // Search for a memory to check its importance was decayed.
-      final results = await souvenir.recall('dark mode');
-      final semantic =
-          results.where((r) => r.source == RecallSource.semantic).toList();
-
-      if (semantic.isNotEmpty) {
-        // Original importance was 0.9 from mock LLM. After decay with
-        // rate 0.5 and inactivePeriod=0, it should be 0.9 * 0.5 = 0.45.
-        expect(semantic.first.importance, closeTo(0.45, 0.01));
-      }
-    });
-
-    test('consolidation result reports decayed count', () async {
-      // Run another consolidation (no new episodes to consolidate,
-      // but decay still runs).
-      final result = await souvenir.consolidate(_mockLlm);
-      expect(result.memoriesDecayed, greaterThanOrEqualTo(0));
-    });
-  });
-
-  // ── Config consolidation ─────────────────────────────────────────────────
-
-  group('SouvenirConfig', () {
-    test('all defaults have expected values', () {
-      const config = SouvenirConfig();
-      // Write pipeline.
-      expect(config.flushThreshold, 50);
-      // Episodic importance defaults.
-      expect(config.importanceUserDirective, 0.95);
-      expect(config.importanceError, 0.8);
-      expect(config.importanceToolResult, 0.8);
-      expect(config.importanceDecision, 0.75);
-      expect(config.importanceConversation, 0.4);
-      expect(config.importanceObservation, 0.3);
-      // Consolidation.
-      expect(config.consolidationMinAge, const Duration(minutes: 5));
-      expect(config.mergeThreshold, 0.5);
-      expect(config.defaultImportance, 0.5);
-      expect(config.defaultConfidence, 1.0);
-      // Decay.
-      expect(config.importanceDecayRate, 0.95);
-      expect(config.decayInactivePeriod, const Duration(days: 30));
-      // Retrieval pipeline.
-      expect(config.recallTopK, 10);
-      expect(config.rrfK, 60);
-      expect(config.temporalDecayLambda, 0.01);
-      expect(config.contextTokenBudget, 4000);
-      expect(config.tokenEstimationDivisor, 4.0);
-    });
-
-    test('importanceForEpisodeType resolves correctly', () {
-      const config = SouvenirConfig(
-        importanceConversation: 0.55,
-        importanceToolResult: 0.99,
-      );
-      expect(config.importanceForEpisodeType('conversation'), 0.55);
-      expect(config.importanceForEpisodeType('toolResult'), 0.99);
-      expect(config.importanceForEpisodeType('unknown'), config.defaultImportance);
-    });
-  });
-
-  // ── Retrieval pipeline ─────────────────────────────────────────────────
-
-  group('Retrieval pipeline', () {
-    late Souvenir souvenir;
-
-    setUp(() async {
-      souvenir = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          flushThreshold: 100,
-        ),
-      );
-      await souvenir.initialize();
-
-      // Seed episodes and consolidate to create memories + entities.
-      for (final ep in [
-        Episode(
-          sessionId: 'ses_01',
-          type: EpisodeType.decision,
-          content: 'Decided to use dark mode for all interfaces',
-        ),
-        Episode(
-          sessionId: 'ses_01',
-          type: EpisodeType.toolResult,
-          content: 'Configured SQLite database for local storage',
-        ),
-      ]) {
-        await souvenir.record(ep);
-      }
-      await souvenir.flush();
-      await souvenir.consolidate(_mockLlm);
-    });
-
-    tearDown(() async {
-      await souvenir.close();
-    });
-
-    test('results from multiple signals', () async {
-      // Add an episode that also matches "SQLite" for episodic signal.
-      await souvenir.record(Episode(
-        sessionId: 'ses_02',
-        type: EpisodeType.observation,
-        content: 'SQLite is fast for local development',
-      ));
-      await souvenir.flush();
-
-      final results = await souvenir.recall('SQLite');
-      final sources = results.map((r) => r.source).toSet();
-      expect(sources, contains(RecallSource.episodic));
-      // semantic or entity — both come from memories.
+      expect(a.lastConsolidationEpisodes, hasLength(2));
+      expect(b.lastConsolidationEpisodes, hasLength(2));
       expect(
-        results.any((r) =>
-            r.source == RecallSource.semantic ||
-            r.source == RecallSource.entity),
-        isTrue,
+        a.lastConsolidationEpisodes!.first.id,
+        b.lastConsolidationEpisodes!.first.id,
       );
     });
 
-    test('items in multiple signals score higher', () async {
-      // "SQLite" appears in both episodic and semantic memories.
-      // Also the entity "SQLite" exists, so entity-graph also finds it.
-      await souvenir.record(Episode(
-        sessionId: 'ses_02',
-        type: EpisodeType.observation,
-        content: 'SQLite is a great embedded database engine',
-      ));
-      // "authentication" only appears in one episode.
-      await souvenir.record(Episode(
-        sessionId: 'ses_02',
-        type: EpisodeType.observation,
-        content: 'Authentication is important for security',
-      ));
-      await souvenir.flush();
-
-      final sqliteResults = await souvenir.recall('SQLite');
-      final authResults = await souvenir.recall('authentication');
-
-      // SQLite appears in more signals, so its top result should score higher.
-      expect(sqliteResults, isNotEmpty);
-      expect(authResults, isNotEmpty);
-      // SQLite's top score benefits from multi-signal fusion.
-      expect(sqliteResults.first.score, greaterThan(0));
-    });
-
-    test('deduplication removes exact duplicates', () async {
-      // Record an episode with exact same content as a known memory.
-      await souvenir.record(Episode(
-        sessionId: 'ses_03',
-        type: EpisodeType.observation,
-        content: 'User prefers dark mode in all applications',
-      ));
-      await souvenir.flush();
-
-      final results = await souvenir.recall('dark mode');
-      // Count how many results have the exact duplicate content.
-      final duplicateContent = results
-          .where((r) => r.content == 'User prefers dark mode in all applications')
-          .toList();
-      expect(duplicateContent.length, 1);
-    });
-
-    test('minImportance filter works', () async {
-      final results = await souvenir.recall(
-        'dark mode',
-        options: const RecallOptions(minImportance: 0.99),
+    test('components receive their specific budget', () async {
+      final a = StubComponent(name: 'a');
+      final b = StubComponent(name: 'b');
+      final engine = _engine(
+        components: [a, b],
+        budget: _testBudget(allocation: {'a': 100, 'b': 200}),
       );
-      for (final r in results) {
-        expect(r.importance, greaterThanOrEqualTo(0.99));
-      }
+      await engine.initialize();
+      await engine.record(_episode('ep1'));
+      await engine.flush();
+
+      await engine.consolidate(_noopLlm);
+
+      expect(a.lastConsolidationBudget!.allocatedTokens, 100);
+      expect(b.lastConsolidationBudget!.allocatedTokens, 200);
     });
 
-    test('tokenBudget caps result size', () async {
-      // Very small budget — should return few or no results.
-      final results = await souvenir.recall(
-        'SQLite',
-        options: const RecallOptions(tokenBudget: 5),
+    test('episodes marked consolidated after all components finish', () async {
+      final store = InMemoryEpisodeStore();
+      final a = StubComponent(name: 'a');
+      final engine = _engine(components: [a], store: store);
+      await engine.initialize();
+      await engine.record(_episode('ep1'));
+      await engine.flush();
+      expect(store.unconsolidatedCount, 1);
+
+      await engine.consolidate(_noopLlm);
+      expect(store.unconsolidatedCount, 0);
+    });
+
+    test('returns reports from all components', () async {
+      final a = StubComponent(
+        name: 'a',
+        onConsolidate: (eps) => ConsolidationReport(
+          componentName: 'a',
+          itemsCreated: 2,
+          episodesConsumed: eps.length,
+        ),
       );
-      // With a budget of 5 tokens (~20 chars), most results won't fit.
-      expect(results.length, lessThanOrEqualTo(1));
-    });
-
-    test('includeEpisodic false skips episodic', () async {
-      final results = await souvenir.recall(
-        'dark mode',
-        options: const RecallOptions(includeEpisodic: false),
+      final b = StubComponent(
+        name: 'b',
+        onConsolidate: (eps) => ConsolidationReport(
+          componentName: 'b',
+          itemsMerged: 1,
+        ),
       );
-      final episodic = results.where((r) => r.source == RecallSource.episodic);
-      expect(episodic, isEmpty);
-    });
-
-    test('includeSemantic false skips semantic', () async {
-      // Add an episode so there's at least something to find.
-      await souvenir.record(Episode(
-        sessionId: 'ses_04',
-        type: EpisodeType.observation,
-        content: 'dark mode theme configuration',
-      ));
-      await souvenir.flush();
-
-      final results = await souvenir.recall(
-        'dark mode',
-        options: const RecallOptions(includeSemantic: false),
+      final engine = _engine(
+        components: [a, b],
+        budget: _testBudget(allocation: {'a': 500, 'b': 500}),
       );
-      final semantic = results.where((r) => r.source == RecallSource.semantic);
-      expect(semantic, isEmpty);
+      await engine.initialize();
+      await engine.record(_episode('ep1'));
+      await engine.flush();
+
+      final reports = await engine.consolidate(_noopLlm);
+
+      expect(reports, hasLength(2));
+      final reportA = reports.firstWhere((r) => r.componentName == 'a');
+      final reportB = reports.firstWhere((r) => r.componentName == 'b');
+      expect(reportA.itemsCreated, 2);
+      expect(reportB.itemsMerged, 1);
     });
 
-    test('results have positive scores', () async {
-      final results = await souvenir.recall('dark mode');
-      expect(results, isNotEmpty);
-      for (final r in results) {
-        expect(r.score, greaterThan(0));
-      }
+    test('empty unconsolidated returns empty list', () async {
+      final engine = _engine(
+        components: [StubComponent(name: 'a')],
+      );
+      await engine.initialize();
+      final reports = await engine.consolidate(_noopLlm);
+      expect(reports, isEmpty);
     });
 
-    test('empty query returns empty results', () async {
-      final results = await souvenir.recall('xyznonexistent');
-      expect(results, isEmpty);
+    test('consolidation flushes buffer first', () async {
+      final store = InMemoryEpisodeStore();
+      final a = StubComponent(name: 'a');
+      final engine = _engine(components: [a], store: store);
+      await engine.initialize();
+      await engine.record(_episode('buffered'));
+      expect(store.length, 0);
+
+      await engine.consolidate(_noopLlm);
+
+      expect(store.length, 1);
+      expect(a.consolidateCallCount, 1);
+      expect(a.lastConsolidationEpisodes, hasLength(1));
+    });
+
+    test('second consolidation only gets new episodes', () async {
+      final store = InMemoryEpisodeStore();
+      final a = StubComponent(name: 'a');
+      final engine = _engine(components: [a], store: store);
+      await engine.initialize();
+
+      await engine.record(_episode('ep1'));
+      await engine.flush();
+      await engine.consolidate(_noopLlm);
+      expect(a.lastConsolidationEpisodes, hasLength(1));
+
+      await engine.record(_episode('ep2'));
+      await engine.flush();
+      await engine.consolidate(_noopLlm);
+      expect(a.lastConsolidationEpisodes, hasLength(1));
+      expect(a.lastConsolidationEpisodes!.first.content, 'ep2');
     });
   });
 
-  // ── Entity graph expansion ─────────────────────────────────────────────
+  // ── Parallel recall ──────────────────────────────────────────────────────
 
-  group('Entity graph expansion', () {
-    late Souvenir souvenir;
-
-    setUp(() async {
-      souvenir = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          flushThreshold: 100,
-        ),
+  group('Parallel recall', () {
+    test('all components receive the same query', () async {
+      final a = StubComponent(name: 'a');
+      final b = StubComponent(name: 'b');
+      final engine = _engine(
+        components: [a, b],
+        budget: _testBudget(allocation: {'a': 500, 'b': 500}),
       );
-      await souvenir.initialize();
+      await engine.initialize();
 
-      // Seed and consolidate — mock LLM creates entities "User", "dark mode",
-      // "Project", "SQLite" and a relationship "Project uses SQLite".
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'Decided to use dark mode for all interfaces',
-      ));
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.toolResult,
-        content: 'Configured SQLite database for local storage',
-      ));
-      await souvenir.flush();
-      await souvenir.consolidate(_mockLlm);
+      await engine.recall('test query');
+
+      expect(a.lastRecallQuery, 'test query');
+      expect(b.lastRecallQuery, 'test query');
     });
 
-    tearDown(() async {
-      await souvenir.close();
-    });
-
-    test('finds memories via entity name match', () async {
-      // Query "SQLite" — entity "SQLite" exists, so graph expansion
-      // should find memories referencing it.
-      final results = await souvenir.recall('SQLite');
-      expect(results, isNotEmpty);
-    });
-
-    test('follows relationships to connected entities', () async {
-      // Query "Project" with only entity-graph signal enabled.
-      // Entity "Project" exists with a relationship to "SQLite".
-      // Graph expansion finds "Project", follows the "uses" relationship
-      // to "SQLite", and returns memories that reference either entity.
-      final results = await souvenir.recall(
-        'Project',
-        options: const RecallOptions(
-          includeEpisodic: false,
-          includeSemantic: false,
-        ),
+    test('components receive their specific budget', () async {
+      final a = StubComponent(name: 'a');
+      final b = StubComponent(name: 'b');
+      final engine = _engine(
+        components: [a, b],
+        budget: _testBudget(allocation: {'a': 100, 'b': 200}),
       );
-      expect(results, isNotEmpty);
-      // All results are entity-sourced since other signals are disabled.
-      for (final r in results) {
-        expect(r.source, RecallSource.entity);
-      }
-      // Should find the SQLite-related memory through the relationship hop.
-      expect(
-        results.any((r) => r.content.contains('SQLite')),
-        isTrue,
-      );
+      await engine.initialize();
+
+      await engine.recall('test');
+
+      expect(a.lastRecallBudget!.allocatedTokens, 100);
+      expect(b.lastRecallBudget!.allocatedTokens, 200);
     });
 
-    test('empty entity match returns gracefully', () async {
-      // Query that matches no entity names.
-      final results = await souvenir.recall('kubernetes');
-      expect(results, isEmpty);
-    });
-
-    test('entity source is attributed correctly', () async {
-      // Disable episodic and semantic so only entity-graph results appear.
-      final results = await souvenir.recall(
-        'Project',
-        options: const RecallOptions(
-          includeEpisodic: false,
-          includeSemantic: false,
-        ),
-      );
-      for (final r in results) {
-        expect(r.source, RecallSource.entity);
-      }
-    });
-  });
-
-  // ── SessionContext ──────────────────────────────────────────────────────
-
-  group('SessionContext', () {
-    late Souvenir souvenir;
-
-    setUp(() async {
-      souvenir = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          flushThreshold: 100,
-        ),
-      );
-      await souvenir.initialize();
-
-      // Seed episodes and consolidate.
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'Decided to use dark mode for all interfaces',
-      ));
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.toolResult,
-        content: 'Configured SQLite database for local storage',
-      ));
-      await souvenir.flush();
-      await souvenir.consolidate(_mockLlm);
-    });
-
-    tearDown(() async {
-      await souvenir.close();
-    });
-
-    test('loadContext returns relevant memories', () async {
-      final context = await souvenir.loadContext('dark mode preferences');
-      expect(context.memories, isNotEmpty);
-      expect(
-        context.memories.any((m) => m.content.contains('dark mode')),
-        isTrue,
-      );
-    });
-
-    test('loadContext returns recent episodes', () async {
-      // Add a recent episode.
-      await souvenir.record(Episode(
-        sessionId: 'ses_02',
-        type: EpisodeType.observation,
-        content: 'Recent observation about testing patterns',
-      ));
-      await souvenir.flush();
-
-      final context = await souvenir.loadContext('testing');
-      expect(context.episodes, isNotEmpty);
-    });
-
-    test('loadContext respects token budget', () async {
-      // Use a very small token budget.
-      final s2 = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          contextTokenBudget: 5, // ~20 chars max.
-        ),
-      );
-      await s2.initialize();
-
-      // Create memories.
-      await s2.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'Decided to use dark mode for all interfaces',
-      ));
-      await s2.flush();
-      await s2.consolidate(_mockLlm);
-
-      final context = await s2.loadContext('dark mode');
-      // With a budget of 5 tokens, very few memories fit.
-      final totalChars =
-          context.memories.fold<int>(0, (sum, m) => sum + m.content.length);
-      // 5 tokens * 4 chars = 20 chars max.
-      expect(totalChars, lessThanOrEqualTo(20));
-
-      await s2.close();
-    });
-
-    test('placeholder fields are null/empty', () async {
-      final context = await souvenir.loadContext('anything');
-      expect(context.personality, isNull);
-      expect(context.identity, isNull);
-      expect(context.procedures, isEmpty);
-    });
-
-    test('estimatedTokens calculates correctly', () {
-      final context = SessionContext(
-        memories: [Memory(content: 'a' * 100)], // 100 chars = 25 tokens
-        episodes: [
-          Episode(
-            sessionId: 's',
-            type: EpisodeType.observation,
-            content: 'b' * 200, // 200 chars = 50 tokens
-          ),
+    test('results are passed to mixer and returned', () async {
+      final a = StubComponent(
+        name: 'a',
+        recallItems: [
+          LabeledRecall(componentName: 'a', content: 'from a', score: 0.9),
         ],
       );
-      expect(context.estimatedTokens, 75);
+      final b = StubComponent(
+        name: 'b',
+        recallItems: [
+          LabeledRecall(componentName: 'b', content: 'from b', score: 0.8),
+        ],
+      );
+      final engine = _engine(
+        components: [a, b],
+        budget: _testBudget(allocation: {'a': 500, 'b': 500}),
+      );
+      await engine.initialize();
+
+      final result = await engine.recall('query');
+
+      expect(result.items, hasLength(2));
+      expect(result.items.first.content, 'from a');
+      expect(result.items.last.content, 'from b');
+    });
+
+    test('recall with no components returns empty MixResult', () async {
+      final engine = _engine();
+      await engine.initialize();
+      final result = await engine.recall('query');
+      expect(result.items, isEmpty);
+      expect(result.totalTokensUsed, 0);
     });
   });
 
-  // ── Embeddings ────────────────────────────────────────────────────────────
+  // ── Empty states ─────────────────────────────────────────────────────────
 
-  group('Embeddings', () {
-    late Souvenir souvenir;
+  group('Empty states', () {
+    test('zero components consolidation returns empty', () async {
+      final engine = _engine();
+      await engine.initialize();
+      await engine.record(_episode('ep'));
+      await engine.flush();
+      final reports = await engine.consolidate(_noopLlm);
+      expect(reports, isEmpty);
+    });
 
-    setUp(() async {
-      souvenir = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          flushThreshold: 100,
-        ),
-        embeddings: _MockEmbeddingProvider(),
+    test('component returns empty recalls', () async {
+      final a = StubComponent(name: 'a', recallItems: []);
+      final engine = _engine(
+        components: [a],
+        budget: _testBudget(allocation: {'a': 500}),
       );
-      await souvenir.initialize();
-
-      // Seed episodes and consolidate to create memories with embeddings.
-      for (final ep in [
-        Episode(
-          sessionId: 'ses_01',
-          type: EpisodeType.decision,
-          content: 'Decided to use dark mode for all interfaces',
-        ),
-        Episode(
-          sessionId: 'ses_01',
-          type: EpisodeType.toolResult,
-          content: 'Configured SQLite database for local storage',
-        ),
-      ]) {
-        await souvenir.record(ep);
-      }
-      await souvenir.flush();
-      await souvenir.consolidate(_mockLlm);
-    });
-
-    tearDown(() async {
-      await souvenir.close();
-    });
-
-    test('consolidation generates embeddings', () async {
-      // The mock LLM creates 2 memories. With embeddings enabled,
-      // both should have been embedded during consolidation.
-      // Verify by querying — vector signal should find results.
-      final results = await souvenir.recall(
-        'dark mode theme preferences',
-        options: const RecallOptions(
-          includeEpisodic: false,
-          includeSemantic: false,
-        ),
-      );
-      // With BM25 disabled and entity graph unlikely to match "dark mode
-      // theme preferences", vector search should find the "dark mode" memory.
-      expect(results, isNotEmpty);
-    });
-
-    test('consolidation reports embedded count', () async {
-      // Add more episodes and consolidate again.
-      await souvenir.record(Episode(
-        sessionId: 'ses_02',
-        type: EpisodeType.observation,
-        content: 'User requested dark mode toggle',
-      ));
-      await souvenir.flush();
-      final result = await souvenir.consolidate(_mockLlm);
-      expect(result.memoriesEmbedded, greaterThan(0));
-    });
-
-    test('vector results participate in RRF fusion', () async {
-      // Query that matches both BM25 and vector signals.
-      final results = await souvenir.recall('dark mode');
-      expect(results, isNotEmpty);
-      // At least one result should have a high score from multi-signal fusion.
-      expect(results.first.score, greaterThan(0));
-    });
-
-    test('vector search finds semantically similar memories', () async {
-      // The mock embedding provider maps "theme" and "mode" to similar vectors.
-      // Query with "theme" — should find "dark mode" memory via vector similarity.
-      await souvenir.record(Episode(
-        sessionId: 'ses_03',
-        type: EpisodeType.observation,
-        content: 'Something unrelated about networking',
-      ));
-      await souvenir.flush();
-
-      // Disable BM25 signals. Entity graph won't match "theme settings".
-      // Only vector search can find "dark mode" via similarity.
-      final results = await souvenir.recall(
-        'theme settings',
-        options: const RecallOptions(
-          includeEpisodic: false,
-          includeSemantic: false,
-        ),
-      );
-      // Vector should find "dark mode" memory via high cosine similarity.
-      final darkModeResult =
-          results.where((r) => r.content.contains('dark mode'));
-      expect(darkModeResult, isNotEmpty);
-    });
-
-    test('RecallSource.vector is attributed correctly', () async {
-      // Disable all signals except vector.
-      final results = await souvenir.recall(
-        'dark mode theme',
-        options: const RecallOptions(
-          includeEpisodic: false,
-          includeSemantic: false,
-        ),
-      );
-      // Filter to results that aren't from entity graph.
-      final vectorResults =
-          results.where((r) => r.source == RecallSource.vector);
-      expect(vectorResults, isNotEmpty);
-    });
-
-    test('works without embedding provider (backward compat)', () async {
-      // Create a souvenir without embedding provider.
-      final s2 = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-        ),
-      );
-      await s2.initialize();
-
-      await s2.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'User prefers dark mode',
-      ));
-      await s2.flush();
-
-      // Consolidation should work without embeddings.
-      final result = await s2.consolidate(_mockLlm);
-      expect(result.memoriesCreated, greaterThan(0));
-      expect(result.memoriesEmbedded, 0);
-
-      // Recall should work without embeddings.
-      final results = await s2.recall('dark mode');
-      expect(results, isNotEmpty);
-
-      await s2.close();
-    });
-
-    test('embedding failure is non-fatal', () async {
-      // Create souvenir with a failing embedding provider.
-      final s2 = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-        ),
-        embeddings: _FailingEmbeddingProvider(),
-      );
-      await s2.initialize();
-
-      await s2.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'User prefers dark mode',
-      ));
-      await s2.flush();
-
-      // Consolidation should still succeed — embedding failure is non-fatal.
-      final result = await s2.consolidate(_mockLlm);
-      expect(result.memoriesCreated, greaterThan(0));
-      expect(result.memoriesEmbedded, 0);
-
-      await s2.close();
-    });
-
-    test('embeddingTopK config is respected', () async {
-      const config = SouvenirConfig();
-      expect(config.embeddingTopK, 20);
-
-      const custom = SouvenirConfig(embeddingTopK: 5);
-      expect(custom.embeddingTopK, 5);
+      await engine.initialize();
+      final result = await engine.recall('query');
+      expect(result.items, isEmpty);
+      expect(result.componentUsage['a']!.used, 0);
     });
   });
 
-  // ── Personality ──────────────────────────────────────────────────────────
+  // ── Budget accounting integration ────────────────────────────────────────
 
-  group('Personality', () {
-    test('identity getter returns constructor text', () async {
-      final souvenir = Souvenir(identityText: 'I am a helpful assistant.');
-      await souvenir.initialize();
-      expect(souvenir.identity, 'I am a helpful assistant.');
-      await souvenir.close();
-    });
-
-    test('personality seeded from identity on first init', () async {
-      final souvenir = Souvenir(identityText: 'Core identity text here.');
-      await souvenir.initialize();
-      expect(souvenir.personality, 'Core identity text here.');
-      await souvenir.close();
-    });
-
-    test('without identityText, personality and identity are null', () async {
-      final souvenir = Souvenir();
-      await souvenir.initialize();
-      expect(souvenir.identity, isNull);
-      expect(souvenir.personality, isNull);
-      await souvenir.close();
-    });
-
-    test('loadContext includes personality and identity', () async {
-      final souvenir = Souvenir(
-        identityText: 'A meticulous code assistant.',
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          flushThreshold: 100,
-        ),
+  group('Budget accounting integration', () {
+    test('engine tokenizer consistent with component budget tokenizer',
+        () async {
+      const tokenizer = ApproximateTokenizer();
+      final budget = Budget(
+        totalTokens: 1000,
+        allocation: {'a': 500},
+        tokenizer: tokenizer,
       );
-      await souvenir.initialize();
+      final a = StubComponent(name: 'a');
+      final engine = Souvenir(
+        components: [a],
+        budget: budget,
+        mixer: const WeightedMixer(),
+      );
+      await engine.initialize();
+      await engine.recall('query');
 
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.observation,
-        content: 'Testing session context',
-      ));
-      await souvenir.flush();
-
-      final context = await souvenir.loadContext('anything');
-      expect(context.identity, 'A meticulous code assistant.');
-      expect(context.personality, 'A meticulous code assistant.');
-      await souvenir.close();
+      expect(identical(a.lastRecallBudget!.tokenizer, tokenizer), isTrue);
     });
 
-    test('consolidation updates personality', () async {
-      final souvenir = Souvenir(
-        identityText: 'A curious and methodical agent.',
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          flushThreshold: 100,
-          personalityMinEpisodes: 0,
-        ),
+    test('mixer uses same tokenizer for budget cutoff', () {
+      const tokenizer = ApproximateTokenizer();
+      const mixer = WeightedMixer();
+      final budget = Budget(
+        totalTokens: 2,
+        allocation: {'a': 10},
+        tokenizer: tokenizer,
       );
-      await souvenir.initialize();
 
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'Decided to use dark mode for all interfaces',
-      ));
-      await souvenir.flush();
+      // 'abcd' = 4 chars → 1 token. Budget = 2 tokens → fits 2 items.
+      final result = mixer.mix({
+        'a': [
+          LabeledRecall(componentName: 'a', content: 'abcd', score: 0.9),
+          LabeledRecall(componentName: 'a', content: 'efgh', score: 0.8),
+          LabeledRecall(componentName: 'a', content: 'ijkl', score: 0.7),
+        ],
+      }, budget);
 
-      final result = await souvenir.consolidate(_personalityMockLlm);
-      expect(result.personalityUpdated, isTrue);
-      expect(souvenir.personality, isNot('A curious and methodical agent.'));
-      await souvenir.close();
-    });
-
-    test('consolidation skips personality when not configured', () async {
-      final souvenir = Souvenir(
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          flushThreshold: 100,
-        ),
-      );
-      await souvenir.initialize();
-
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'Decided to use dark mode',
-      ));
-      await souvenir.flush();
-
-      final result = await souvenir.consolidate(_mockLlm);
-      expect(result.personalityUpdated, isFalse);
-      expect(souvenir.personality, isNull);
-      await souvenir.close();
-    });
-
-    test('drift threshold prevents update when change is small', () async {
-      final souvenir = Souvenir(
-        identityText: 'A helpful assistant.',
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          flushThreshold: 100,
-          personalityMinEpisodes: 0,
-          minPersonalityDrift: 0.99, // Very high — almost never update.
-        ),
-        embeddings: _MockEmbeddingProvider(),
-      );
-      await souvenir.initialize();
-
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'Decided to use dark mode',
-      ));
-      await souvenir.flush();
-
-      final result = await souvenir.consolidate(_personalityMockLlm);
-      // Drift threshold is 0.99 — the LLM-suggested text is different enough
-      // in content but the mock embeddings should produce a small cosine
-      // distance, so the update should be skipped.
-      expect(result.personalityUpdated, isFalse);
-      expect(souvenir.personality, 'A helpful assistant.');
-      await souvenir.close();
-    });
-
-    test('hard reset restores identity', () async {
-      final souvenir = Souvenir(
-        identityText: 'Original identity.',
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          flushThreshold: 100,
-          personalityMinEpisodes: 0,
-        ),
-      );
-      await souvenir.initialize();
-
-      // Consolidate to change personality.
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'Decided to use dark mode',
-      ));
-      await souvenir.flush();
-      await souvenir.consolidate(_personalityMockLlm);
-      expect(souvenir.personality, isNot('Original identity.'));
-
-      // Hard reset.
-      await souvenir.resetPersonality(ResetLevel.hard);
-      expect(souvenir.personality, 'Original identity.');
-      await souvenir.close();
-    });
-
-    test('rollback restores historical snapshot', () async {
-      final souvenir = Souvenir(
-        identityText: 'Version zero.',
-        config: const SouvenirConfig(
-          consolidationMinAge: Duration.zero,
-          flushThreshold: 100,
-          personalityMinEpisodes: 0,
-        ),
-      );
-      await souvenir.initialize();
-
-      // First consolidation changes personality (creates snapshot of v0).
-      await souvenir.record(Episode(
-        sessionId: 'ses_01',
-        type: EpisodeType.decision,
-        content: 'Decided to use dark mode',
-      ));
-      await souvenir.flush();
-      await souvenir.consolidate(_personalityMockLlm);
-      final v1 = souvenir.personality;
-      expect(v1, isNot('Version zero.'));
-
-      // Rollback to before v1 was saved — should get "Version zero." back.
-      await souvenir.resetPersonality(
-        ResetLevel.rollback,
-        date: DateTime.now().add(const Duration(seconds: 1)),
-      );
-      // The snapshot saved when v1 replaced v0 is "Version zero.".
-      expect(souvenir.personality, 'Version zero.');
-      await souvenir.close();
-    });
-
-    test('estimatedTokens includes personality and identity', () {
-      final context = SessionContext(
-        personality: 'a' * 100, // 25 tokens
-        identity: 'b' * 200, // 50 tokens
-      );
-      expect(context.estimatedTokens, 75);
+      expect(result.items, hasLength(2));
+      expect(result.totalTokensUsed, 2);
     });
   });
-
-  // ── Procedural memory ──────────────────────────────────────────────────
-
-  group('Procedural memory', () {
-    test('matches debug intent to debugging procedure', () async {
-      final souvenir = Souvenir(
-        procedures: {
-          'debugging': 'Step 1: Reproduce the error. Step 2: Check logs.',
-          'code_review': 'Always check for security issues first.',
-        },
-      );
-      await souvenir.initialize();
-
-      final context = await souvenir.loadContext('help me debug this error');
-      expect(context.procedures, isNotEmpty);
-      expect(context.procedures.first, contains('Reproduce the error'));
-      await souvenir.close();
-    });
-
-    test('matches review intent to code_review procedure', () async {
-      final souvenir = Souvenir(
-        procedures: {
-          'debugging': 'Step 1: Reproduce the error.',
-          'code_review': 'Always check for security issues first.',
-        },
-      );
-      await souvenir.initialize();
-
-      final context =
-          await souvenir.loadContext('review the pull request changes');
-      expect(context.procedures, isNotEmpty);
-      expect(
-        context.procedures.any((p) => p.contains('security issues')),
-        isTrue,
-      );
-      await souvenir.close();
-    });
-
-    test('no match for unrelated intent', () async {
-      final souvenir = Souvenir(
-        procedures: {
-          'debugging': 'Step 1: Reproduce the error.',
-          'code_review': 'Always check for security issues first.',
-        },
-      );
-      await souvenir.initialize();
-
-      final context =
-          await souvenir.loadContext('deploy the application to production');
-      expect(context.procedures, isEmpty);
-      await souvenir.close();
-    });
-
-    test('loadContext returns empty procedures when none configured', () async {
-      final souvenir = Souvenir();
-      await souvenir.initialize();
-
-      final context = await souvenir.loadContext('anything');
-      expect(context.procedures, isEmpty);
-      await souvenir.close();
-    });
-
-    test('recordOutcome stores success/failure in database', () async {
-      final souvenir = Souvenir(
-        procedures: {
-          'debugging': 'Step 1: Reproduce the error.',
-        },
-      );
-      await souvenir.initialize();
-
-      await souvenir.recordOutcome(
-        taskType: 'debugging',
-        success: true,
-        sessionId: 'ses_01',
-      );
-      await souvenir.recordOutcome(
-        taskType: 'debugging',
-        success: false,
-        sessionId: 'ses_02',
-        notes: 'Could not reproduce',
-      );
-      await souvenir.recordOutcome(
-        taskType: 'debugging',
-        success: true,
-        sessionId: 'ses_03',
-      );
-
-      // Verify via the Procedure export (no direct store access in public API,
-      // but recordOutcome not throwing confirms writes succeeded).
-      await souvenir.close();
-    });
-
-    test('pattern summary includes track record', () async {
-      final souvenir = Souvenir(
-        procedures: {
-          'debugging': 'Step 1: Reproduce the error.',
-        },
-      );
-      await souvenir.initialize();
-
-      await souvenir.recordOutcome(
-        taskType: 'testing',
-        success: true,
-        sessionId: 'ses_01',
-      );
-      await souvenir.recordOutcome(
-        taskType: 'testing',
-        success: false,
-        sessionId: 'ses_02',
-        notes: 'Flaky test failure',
-      );
-
-      // We can't call patternSummary directly from Souvenir,
-      // but we can verify the data was stored by recording more outcomes.
-      // (Pattern summary is used internally during loadContext.)
-      await souvenir.close();
-    });
-
-    test('token budget excludes long procedures', () async {
-      final souvenir = Souvenir(
-        config: const SouvenirConfig(
-          maxProcedureTokens: 5, // ~20 chars budget
-        ),
-        procedures: {
-          'debugging': 'A' * 200, // 200 chars = 50 tokens, exceeds budget
-        },
-      );
-      await souvenir.initialize();
-
-      final context = await souvenir.loadContext('help me debug this error');
-      // The procedure matches by keyword but exceeds token budget.
-      expect(context.procedures, isEmpty);
-      await souvenir.close();
-    });
-
-    test('multiple procedures can match same intent', () async {
-      final souvenir = Souvenir(
-        procedures: {
-          'code_review': 'Check for security issues.',
-          'code_style': 'Enforce consistent formatting.',
-        },
-      );
-      await souvenir.initialize();
-
-      // "code" is a keyword for both procedures.
-      final context = await souvenir.loadContext('review the code changes');
-      expect(context.procedures.length, 2);
-      await souvenir.close();
-    });
-  });
-}
-
-/// Mock LLM that handles both fact extraction and personality updates.
-///
-/// Distinguishes calls by checking the system prompt: personality-related
-/// prompts get a plain-text response; fact extraction prompts get JSON.
-Future<String> _personalityMockLlm(String system, String user) async {
-  if (system.contains('personality')) {
-    return 'The agent has become more detail-oriented and cautious in its '
-        'approach, favoring thoroughness over speed.';
-  }
-  return _mockLlm(system, user);
-}
-
-/// Mock embedding provider that produces deterministic vectors.
-///
-/// Texts about "dark"/"mode"/"theme" get high first dimension,
-/// texts about "sqlite"/"database" get high second dimension,
-/// texts about "user"/"prefer" get high third dimension.
-/// Similar texts produce similar vectors for cosine similarity.
-class _MockEmbeddingProvider implements EmbeddingProvider {
-  @override
-  int get dimensions => 3;
-
-  @override
-  Future<List<double>> embed(String text) async {
-    final lower = text.toLowerCase();
-    final v = [
-      lower.contains('dark') || lower.contains('mode') || lower.contains('theme')
-          ? 0.9
-          : 0.1,
-      lower.contains('sqlite') || lower.contains('database') ? 0.9 : 0.1,
-      lower.contains('user') || lower.contains('prefer') ? 0.9 : 0.1,
-    ];
-    // Normalize to unit vector for clean cosine similarity.
-    final norm = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    return [v[0] / norm, v[1] / norm, v[2] / norm];
-  }
-}
-
-/// Embedding provider that always throws.
-class _FailingEmbeddingProvider implements EmbeddingProvider {
-  @override
-  int get dimensions => 3;
-
-  @override
-  Future<List<double>> embed(String text) async {
-    throw Exception('Embedding service unavailable');
-  }
 }
