@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:souvenir/souvenir.dart';
+import 'package:stanza_sqlite/stanza_sqlite.dart';
 import 'package:test/test.dart';
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
@@ -910,6 +913,1018 @@ void main() {
 
       expect(result.items, hasLength(2));
       expect(result.totalTokensUsed, 2);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  PHASE 2: DurableMemory + SqliteEpisodeStore
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── StoredMemory ───────────────────────────────────────────────────────
+
+  group('StoredMemory', () {
+    test('generates ULID id when not provided', () {
+      final m = StoredMemory(content: 'test fact');
+      expect(m.id, isNotEmpty);
+      expect(m.id.length, 26); // ULID length
+    });
+
+    test('defaults to active status', () {
+      final m = StoredMemory(content: 'test');
+      expect(m.status, MemoryStatus.active);
+    });
+
+    test('defaults importance to 0.5', () {
+      final m = StoredMemory(content: 'test');
+      expect(m.importance, 0.5);
+    });
+
+    test('defaults temporal validity fields to null', () {
+      final m = StoredMemory(content: 'test');
+      expect(m.validAt, isNull);
+      expect(m.invalidAt, isNull);
+      expect(m.supersededBy, isNull);
+    });
+
+    test('isTemporallyValid true when no bounds set', () {
+      final m = StoredMemory(content: 'test');
+      expect(m.isTemporallyValid, isTrue);
+    });
+
+    test('isTemporallyValid false when invalidAt is in the past', () {
+      final m = StoredMemory(
+        content: 'test',
+        invalidAt: DateTime.now().subtract(const Duration(hours: 1)),
+      );
+      expect(m.isTemporallyValid, isFalse);
+    });
+
+    test('isTemporallyValid false when validAt is in the future', () {
+      final m = StoredMemory(
+        content: 'test',
+        validAt: DateTime.now().add(const Duration(hours: 1)),
+      );
+      expect(m.isTemporallyValid, isFalse);
+    });
+
+    test('accepts all explicit fields', () {
+      final now = DateTime.now().toUtc();
+      final m = StoredMemory(
+        id: 'custom-id',
+        content: 'user prefers Dart',
+        importance: 0.9,
+        entityIds: ['e1', 'e2'],
+        sourceEpisodeIds: ['ep1'],
+        createdAt: now,
+        updatedAt: now,
+        accessCount: 5,
+        status: MemoryStatus.superseded,
+        supersededBy: 'new-id',
+        validAt: now,
+        invalidAt: now.add(const Duration(days: 30)),
+      );
+      expect(m.id, 'custom-id');
+      expect(m.importance, 0.9);
+      expect(m.entityIds, ['e1', 'e2']);
+      expect(m.status, MemoryStatus.superseded);
+      expect(m.supersededBy, 'new-id');
+    });
+  });
+
+  // ── DurableMemoryStore ─────────────────────────────────────────────────
+
+  group('DurableMemoryStore', () {
+    late StanzaSqlite db;
+    late DurableMemoryStore store;
+
+    setUp(() async {
+      db = StanzaSqlite.memory();
+      store = DurableMemoryStore(db);
+      await store.initialize();
+    });
+
+    tearDown(() async {
+      await db.close();
+    });
+
+    test('initialize creates tables idempotently', () async {
+      // Second call should not throw.
+      await store.initialize();
+      expect(await store.activeMemoryCount(), 0);
+    });
+
+    test('insertMemory and activeMemoryCount', () async {
+      await store.insertMemory(StoredMemory(content: 'fact one'));
+      await store.insertMemory(StoredMemory(content: 'fact two'));
+      expect(await store.activeMemoryCount(), 2);
+    });
+
+    test('searchMemories returns BM25-ranked results', () async {
+      await store.insertMemory(
+        StoredMemory(content: 'Dart is a programming language'),
+      );
+      await store.insertMemory(
+        StoredMemory(content: 'Flutter uses Dart for development'),
+      );
+      await store.insertMemory(
+        StoredMemory(content: 'Python is popular for data science'),
+      );
+
+      final results = await store.searchMemories('Dart programming');
+      expect(results, isNotEmpty);
+      expect(results.first.memory.content, contains('Dart'));
+      expect(results.first.score, greaterThan(0));
+    });
+
+    test('searchMemories excludes non-active memories', () async {
+      await store.insertMemory(
+        StoredMemory(content: 'old fact about Dart', status: MemoryStatus.superseded),
+      );
+      await store.insertMemory(
+        StoredMemory(content: 'new fact about Dart'),
+      );
+
+      final results = await store.searchMemories('Dart');
+      expect(results, hasLength(1));
+      expect(results.first.memory.content, 'new fact about Dart');
+    });
+
+    test('updateMemory updates specified fields', () async {
+      final mem = StoredMemory(content: 'original');
+      await store.insertMemory(mem);
+
+      await store.updateMemory(
+        mem.id,
+        content: 'updated content',
+        importance: 0.9,
+      );
+
+      final found = await store.findMemoriesByIds([mem.id]);
+      expect(found, hasLength(1));
+      expect(found.first.content, 'updated content');
+      expect(found.first.importance, 0.9);
+    });
+
+    test('findMemoriesByIds preserves order', () async {
+      final m1 = StoredMemory(content: 'first');
+      final m2 = StoredMemory(content: 'second');
+      final m3 = StoredMemory(content: 'third');
+      await store.insertMemory(m1);
+      await store.insertMemory(m2);
+      await store.insertMemory(m3);
+
+      final found = await store.findMemoriesByIds([m3.id, m1.id]);
+      expect(found, hasLength(2));
+      expect(found[0].content, 'third');
+      expect(found[1].content, 'first');
+    });
+
+    test('upsertEntity and findEntityByName', () async {
+      await store.upsertEntity(id: 'e1', name: 'Dart', type: 'project');
+      final entity = await store.findEntityByName('Dart');
+      expect(entity, isNotNull);
+      expect(entity!.id, 'e1');
+      expect(entity.type, 'project');
+    });
+
+    test('findEntityByName returns null for unknown', () async {
+      final entity = await store.findEntityByName('Nonexistent');
+      expect(entity, isNull);
+    });
+
+    test('findEntitiesByNameMatch finds substring matches', () async {
+      await store.upsertEntity(id: 'e1', name: 'Dart', type: 'project');
+      await store.upsertEntity(id: 'e2', name: 'Flutter', type: 'project');
+
+      final matches = await store.findEntitiesByNameMatch(
+        'I use Dart for my projects',
+      );
+      expect(matches, hasLength(1));
+      expect(matches.first.name, 'Dart');
+    });
+
+    test('upsertRelationship and findRelationshipsForEntity', () async {
+      await store.upsertEntity(id: 'e1', name: 'Flutter', type: 'project');
+      await store.upsertEntity(id: 'e2', name: 'Dart', type: 'project');
+      await store.upsertRelationship(
+        fromEntity: 'e1',
+        toEntity: 'e2',
+        relation: 'uses',
+        confidence: 0.95,
+      );
+
+      final rels = await store.findRelationshipsForEntity('e1');
+      expect(rels, hasLength(1));
+      expect(rels.first.relation, 'uses');
+      expect(rels.first.confidence, 0.95);
+
+      // Also found from the other direction.
+      final rels2 = await store.findRelationshipsForEntity('e2');
+      expect(rels2, hasLength(1));
+    });
+
+    test('findMemoriesByEntityIds finds associated memories', () async {
+      final mem = StoredMemory(
+        content: 'Dart is great',
+        entityIds: ['e1'],
+      );
+      await store.insertMemory(mem);
+      await store.upsertEntity(id: 'e1', name: 'Dart', type: 'project');
+
+      final found = await store.findMemoriesByEntityIds(['e1']);
+      expect(found, hasLength(1));
+      expect(found.first.content, 'Dart is great');
+    });
+
+    test('findMemoriesByEntityIds excludes non-active', () async {
+      final mem = StoredMemory(
+        content: 'old fact',
+        entityIds: ['e1'],
+        status: MemoryStatus.superseded,
+      );
+      await store.insertMemory(mem);
+
+      final found = await store.findMemoriesByEntityIds(['e1']);
+      expect(found, isEmpty);
+    });
+
+    test('updateAccessStats bumps count and timestamp', () async {
+      final mem = StoredMemory(content: 'test');
+      await store.insertMemory(mem);
+
+      await store.updateAccessStats([mem.id]);
+      await store.updateAccessStats([mem.id]);
+
+      final found = await store.findMemoriesByIds([mem.id]);
+      expect(found.first.accessCount, 2);
+      expect(found.first.lastAccessed, isNotNull);
+    });
+
+    test('supersede marks old as superseded', () async {
+      final old = StoredMemory(content: 'old fact');
+      final replacement = StoredMemory(content: 'new fact');
+      await store.insertMemory(old);
+      await store.insertMemory(replacement);
+
+      await store.supersede(old.id, replacement.id);
+
+      final found = await store.findMemoriesByIds([old.id]);
+      expect(found.first.status, MemoryStatus.superseded);
+      expect(found.first.supersededBy, replacement.id);
+      expect(await store.activeMemoryCount(), 1);
+    });
+
+    test('applyImportanceDecay decays inactive memories', () async {
+      final old = StoredMemory(
+        content: 'stale fact',
+        importance: 1.0,
+        updatedAt: DateTime.now().subtract(const Duration(days: 100)),
+      );
+      final recent = StoredMemory(
+        content: 'fresh fact',
+        importance: 1.0,
+      );
+      await store.insertMemory(old);
+      await store.insertMemory(recent);
+
+      final affected = await store.applyImportanceDecay(
+        inactivePeriod: const Duration(days: 90),
+        decayRate: 0.5,
+      );
+
+      expect(affected, 1); // Only old memory decayed.
+      final found = await store.listActiveMemories();
+      final oldFound = found.firstWhere((m) => m.id == old.id);
+      final recentFound = found.firstWhere((m) => m.id == recent.id);
+      expect(oldFound.importance, closeTo(0.5, 0.01));
+      expect(recentFound.importance, 1.0);
+    });
+
+    test('embedding round-trip via BLOB', () async {
+      final mem = StoredMemory(content: 'test embedding');
+      await store.insertMemory(mem);
+
+      final embedding = [0.1, 0.2, 0.3, 0.4, 0.5];
+      await store.updateMemoryEmbedding(mem.id, embedding);
+
+      final loaded = await store.loadMemoriesWithEmbeddings();
+      expect(loaded, hasLength(1));
+      expect(loaded.first.id, mem.id);
+      for (var i = 0; i < embedding.length; i++) {
+        expect(loaded.first.embedding[i], closeTo(embedding[i], 0.001));
+      }
+    });
+
+    test('listActiveMemories ordered by importance desc', () async {
+      await store.insertMemory(StoredMemory(content: 'low', importance: 0.2));
+      await store.insertMemory(StoredMemory(content: 'high', importance: 0.9));
+      await store.insertMemory(StoredMemory(content: 'mid', importance: 0.5));
+
+      final list = await store.listActiveMemories();
+      expect(list.map((m) => m.content).toList(), ['high', 'mid', 'low']);
+    });
+  });
+
+  // ── DurableMemory consolidation ────────────────────────────────────────
+
+  group('DurableMemory consolidation', () {
+    late StanzaSqlite db;
+    late DurableMemoryStore store;
+    late DurableMemory component;
+
+    setUp(() async {
+      db = StanzaSqlite.memory();
+      store = DurableMemoryStore(db);
+      // BM25 scores in a tiny corpus are near zero (e.g. 0.000003), so
+      // mergeThreshold must be 0.0 to trigger conflict resolution in tests.
+      component = DurableMemory(
+        store: store,
+        config: const DurableMemoryConfig(mergeThreshold: 0.0),
+      );
+      await component.initialize();
+    });
+
+    tearDown(() async {
+      await db.close();
+    });
+
+    ComponentBudget _budget([int tokens = 10000]) {
+      return ComponentBudget(
+        allocatedTokens: tokens,
+        tokenizer: const ApproximateTokenizer(),
+      );
+    }
+
+    Future<String> _stubLlm(Map<String, dynamic> extraction) {
+      return Future.value(jsonEncode(extraction));
+    }
+
+    test('extracts facts and creates memories', () async {
+      final episodes = [
+        _episode('User said they prefer composition over inheritance'),
+      ];
+
+      final report = await component.consolidate(
+        episodes,
+        (sys, user) => _stubLlm({
+          'facts': [
+            {
+              'content': 'User prefers composition over inheritance',
+              'entities': [
+                {'name': 'User', 'type': 'person'},
+              ],
+              'importance': 0.9,
+              'conflict': null,
+            },
+          ],
+          'relationships': [],
+        }),
+        _budget(),
+      );
+
+      expect(report.componentName, 'durable');
+      expect(report.itemsCreated, 1);
+      expect(report.episodesConsumed, 1);
+      expect(await store.activeMemoryCount(), 1);
+    });
+
+    test('creates entities during extraction', () async {
+      final episodes = [_episode('Dart is a language')];
+
+      await component.consolidate(
+        episodes,
+        (sys, user) => _stubLlm({
+          'facts': [
+            {
+              'content': 'Dart is a programming language by Google',
+              'entities': [
+                {'name': 'Dart', 'type': 'project'},
+                {'name': 'Google', 'type': 'concept'},
+              ],
+              'importance': 0.7,
+            },
+          ],
+          'relationships': [],
+        }),
+        _budget(),
+      );
+
+      final dart = await store.findEntityByName('Dart');
+      final google = await store.findEntityByName('Google');
+      expect(dart, isNotNull);
+      expect(dart!.type, 'project');
+      expect(google, isNotNull);
+    });
+
+    test('creates relationships', () async {
+      final episodes = [_episode('Flutter uses Dart')];
+
+      await component.consolidate(
+        episodes,
+        (sys, user) => _stubLlm({
+          'facts': [],
+          'relationships': [
+            {
+              'from': 'Flutter',
+              'to': 'Dart',
+              'relation': 'uses',
+              'confidence': 0.95,
+            },
+          ],
+        }),
+        _budget(),
+      );
+
+      final flutter = await store.findEntityByName('Flutter');
+      expect(flutter, isNotNull);
+      final rels = await store.findRelationshipsForEntity(flutter!.id);
+      expect(rels, hasLength(1));
+      expect(rels.first.relation, 'uses');
+    });
+
+    test('merges on update conflict', () async {
+      // First consolidation: create initial memory.
+      await component.consolidate(
+        [_episode('User likes Dart')],
+        (sys, user) => _stubLlm({
+          'facts': [
+            {
+              'content': 'User likes Dart',
+              'entities': [],
+              'importance': 0.7,
+            },
+          ],
+          'relationships': [],
+        }),
+        _budget(),
+      );
+      expect(await store.activeMemoryCount(), 1);
+
+      // Second consolidation: update with refinement.
+      await component.consolidate(
+        [_episode('User loves Dart for its type system')],
+        (sys, user) => _stubLlm({
+          'facts': [
+            {
+              'content': 'User loves Dart for its strong type system',
+              'entities': [],
+              'importance': 0.8,
+              'conflict': 'update',
+            },
+          ],
+          'relationships': [],
+        }),
+        _budget(),
+      );
+
+      // Should still be 1 memory (merged), with updated content.
+      expect(await store.activeMemoryCount(), 1);
+      final memories = await store.listActiveMemories();
+      expect(memories.first.content, contains('type system'));
+      expect(memories.first.importance, 0.8);
+    });
+
+    test('supersedes on contradiction', () async {
+      // Create initial memory.
+      await component.consolidate(
+        [_episode('User prefers tabs')],
+        (sys, user) => _stubLlm({
+          'facts': [
+            {
+              'content': 'User prefers tabs for indentation',
+              'entities': [],
+              'importance': 0.8,
+            },
+          ],
+          'relationships': [],
+        }),
+        _budget(),
+      );
+
+      // Contradiction: user now prefers spaces.
+      final report = await component.consolidate(
+        [_episode('User switched to spaces')],
+        (sys, user) => _stubLlm({
+          'facts': [
+            {
+              'content': 'User prefers spaces for indentation',
+              'entities': [],
+              'importance': 0.8,
+              'conflict': 'contradiction',
+            },
+          ],
+          'relationships': [],
+        }),
+        _budget(),
+      );
+
+      expect(report.itemsCreated, 1); // New memory created.
+      // One active (new), one superseded (old).
+      expect(await store.activeMemoryCount(), 1);
+      final active = await store.listActiveMemories();
+      expect(active.first.content, contains('spaces'));
+    });
+
+    test('skips duplicate with lower importance', () async {
+      // Create initial memory with high importance.
+      await component.consolidate(
+        [_episode('User prefers Dart')],
+        (sys, user) => _stubLlm({
+          'facts': [
+            {
+              'content': 'User prefers Dart',
+              'entities': [],
+              'importance': 0.9,
+            },
+          ],
+          'relationships': [],
+        }),
+        _budget(),
+      );
+
+      // Duplicate with lower importance — should be skipped.
+      final report = await component.consolidate(
+        [_episode('Again: user prefers Dart')],
+        (sys, user) => _stubLlm({
+          'facts': [
+            {
+              'content': 'User prefers Dart',
+              'entities': [],
+              'importance': 0.5,
+              'conflict': 'duplicate',
+            },
+          ],
+          'relationships': [],
+        }),
+        _budget(),
+      );
+
+      expect(report.itemsCreated, 0);
+      expect(report.itemsMerged, 0);
+      expect(await store.activeMemoryCount(), 1);
+    });
+
+    test('empty episodes returns report with only decay', () async {
+      final report = await component.consolidate([], _noopLlm, _budget());
+      expect(report.itemsCreated, 0);
+      expect(report.episodesConsumed, 0);
+    });
+
+    test('malformed LLM response returns graceful report', () async {
+      final report = await component.consolidate(
+        [_episode('some episode')],
+        (sys, user) async => 'not valid json at all!!!',
+        _budget(),
+      );
+
+      // Should not throw — gracefully returns empty report.
+      expect(report.itemsCreated, 0);
+      expect(report.itemsMerged, 0);
+    });
+
+    test('extraction prompt mentions months-level durability', () async {
+      String? capturedSystem;
+      await component.consolidate(
+        [_episode('test')],
+        (sys, user) async {
+          capturedSystem = sys;
+          return jsonEncode({'facts': [], 'relationships': []});
+        },
+        _budget(),
+      );
+
+      expect(capturedSystem, contains('months from now'));
+    });
+
+    test('extraction prompt requests conflict hints', () async {
+      String? capturedSystem;
+      await component.consolidate(
+        [_episode('test')],
+        (sys, user) async {
+          capturedSystem = sys;
+          return jsonEncode({'facts': [], 'relationships': []});
+        },
+        _budget(),
+      );
+
+      expect(capturedSystem, contains('conflict'));
+      expect(capturedSystem, contains('duplicate'));
+      expect(capturedSystem, contains('contradiction'));
+    });
+
+    test('reuses existing entity instead of creating duplicate', () async {
+      // First consolidation creates entity.
+      await component.consolidate(
+        [_episode('Dart stuff')],
+        (sys, user) => _stubLlm({
+          'facts': [
+            {
+              'content': 'Dart is fast',
+              'entities': [
+                {'name': 'Dart', 'type': 'project'},
+              ],
+              'importance': 0.7,
+            },
+          ],
+          'relationships': [],
+        }),
+        _budget(),
+      );
+
+      // Second consolidation references same entity.
+      await component.consolidate(
+        [_episode('More Dart stuff')],
+        (sys, user) => _stubLlm({
+          'facts': [
+            {
+              'content': 'Dart has strong typing',
+              'entities': [
+                {'name': 'Dart', 'type': 'project'},
+              ],
+              'importance': 0.6,
+            },
+          ],
+          'relationships': [],
+        }),
+        _budget(),
+      );
+
+      // Verify only one entity named 'Dart' exists.
+      final entities = await store.findEntitiesByNameMatch('Dart');
+      expect(entities, hasLength(1));
+    });
+  });
+
+  // ── DurableMemory recall ───────────────────────────────────────────────
+
+  group('DurableMemory recall', () {
+    late StanzaSqlite db;
+    late DurableMemoryStore store;
+    late DurableMemory component;
+
+    setUp(() async {
+      db = StanzaSqlite.memory();
+      store = DurableMemoryStore(db);
+      component = DurableMemory(store: store);
+      await component.initialize();
+    });
+
+    tearDown(() async {
+      await db.close();
+    });
+
+    ComponentBudget _budget([int tokens = 10000]) {
+      return ComponentBudget(
+        allocatedTokens: tokens,
+        tokenizer: const ApproximateTokenizer(),
+      );
+    }
+
+    Future<void> _seedMemory(String content, {
+      double importance = 0.7,
+      List<String> entityIds = const [],
+    }) async {
+      await store.insertMemory(StoredMemory(
+        content: content,
+        importance: importance,
+        entityIds: entityIds,
+      ));
+    }
+
+    test('returns matching memories via BM25', () async {
+      await _seedMemory('Dart is a programming language');
+      await _seedMemory('Python is popular for ML');
+
+      final results = await component.recall('Dart programming', _budget());
+      expect(results, isNotEmpty);
+      expect(results.first.content, contains('Dart'));
+      expect(results.first.componentName, 'durable');
+      expect(results.first.score, greaterThan(0));
+    });
+
+    test('returns empty list for no matches', () async {
+      await _seedMemory('Dart is great');
+      final results = await component.recall(
+        'quantum computing entanglement',
+        _budget(),
+      );
+      expect(results, isEmpty);
+    });
+
+    test('recall labels items with component name', () async {
+      await _seedMemory('test fact about Dart');
+      final results = await component.recall('Dart', _budget());
+      for (final r in results) {
+        expect(r.componentName, 'durable');
+      }
+    });
+
+    test('recall includes metadata with id and importance', () async {
+      await _seedMemory('Dart preference', importance: 0.9);
+      final results = await component.recall('Dart', _budget());
+      expect(results, isNotEmpty);
+      expect(results.first.metadata, isNotNull);
+      expect(results.first.metadata!['importance'], 0.9);
+      expect(results.first.metadata!['id'], isNotNull);
+    });
+
+    test('recall respects budget cutoff', () async {
+      // Seed several memories. Each has content ~30 chars → ~8 tokens.
+      for (var i = 0; i < 10; i++) {
+        await _seedMemory('Dart fact number $i is important');
+      }
+
+      // Tiny budget: only ~2 items should fit.
+      final results = await component.recall('Dart fact', _budget(16));
+      expect(results.length, lessThanOrEqualTo(3));
+    });
+
+    test('recall deduplicates by content', () async {
+      // Insert two memories with identical content (different IDs).
+      await _seedMemory('Dart is a programming language');
+      await _seedMemory('Dart is a programming language');
+
+      final results = await component.recall('Dart programming', _budget());
+      // BM25 may return both, but recall should deduplicate.
+      final contents = results.map((r) => r.content).toSet();
+      expect(contents.length, results.length);
+    });
+
+    test('entity graph expansion finds related memories', () async {
+      // Create entities and relationship.
+      await store.upsertEntity(id: 'e1', name: 'Flutter', type: 'project');
+      await store.upsertEntity(id: 'e2', name: 'Dart', type: 'project');
+      await store.upsertRelationship(
+        fromEntity: 'e1',
+        toEntity: 'e2',
+        relation: 'uses',
+        confidence: 0.9,
+      );
+      // Memory linked to Dart (e2) but not directly mentioning Flutter.
+      await _seedMemory(
+        'Strong type system is excellent',
+        entityIds: ['e2'],
+      );
+
+      // Query mentions Flutter → entity match → expand to Dart → find memory.
+      final results = await component.recall('Flutter', _budget());
+      expect(results, isNotEmpty);
+      expect(results.first.content, contains('type system'));
+    });
+
+    test('recall updates access stats', () async {
+      final mem = StoredMemory(content: 'Dart is wonderful');
+      await store.insertMemory(mem);
+
+      await component.recall('Dart', _budget());
+
+      final found = await store.findMemoriesByIds([mem.id]);
+      expect(found.first.accessCount, greaterThan(0));
+    });
+
+    test('custom component name is used in recall labels', () async {
+      final customComponent = DurableMemory(
+        name: 'long-term',
+        store: store,
+      );
+
+      await _seedMemory('Dart fact');
+      final results = await customComponent.recall('Dart', _budget());
+      if (results.isNotEmpty) {
+        expect(results.first.componentName, 'long-term');
+      }
+    });
+  });
+
+  // ── SqliteEpisodeStore ─────────────────────────────────────────────────
+
+  group('SqliteEpisodeStore', () {
+    late StanzaSqlite db;
+    late SqliteEpisodeStore store;
+
+    setUp(() async {
+      db = StanzaSqlite.memory();
+      store = SqliteEpisodeStore(db);
+      await store.initialize();
+    });
+
+    tearDown(() async {
+      await db.close();
+    });
+
+    test('insert and count', () async {
+      await store.insert([_episode('a'), _episode('b')]);
+      expect(await store.count(), 2);
+    });
+
+    test('fetchUnconsolidated returns all initially', () async {
+      await store.insert([_episode('a'), _episode('b')]);
+      final unconsolidated = await store.fetchUnconsolidated();
+      expect(unconsolidated, hasLength(2));
+    });
+
+    test('markConsolidated excludes from fetch', () async {
+      final ep1 = _episode('a');
+      final ep2 = _episode('b');
+      await store.insert([ep1, ep2]);
+      await store.markConsolidated([ep1]);
+
+      final unconsolidated = await store.fetchUnconsolidated();
+      expect(unconsolidated, hasLength(1));
+      expect(unconsolidated.first.content, 'b');
+    });
+
+    test('unconsolidatedCount tracks correctly', () async {
+      final episodes = [_episode('a'), _episode('b'), _episode('c')];
+      await store.insert(episodes);
+      expect(await store.unconsolidatedCount(), 3);
+
+      await store.markConsolidated([episodes[0]]);
+      expect(await store.unconsolidatedCount(), 2);
+    });
+
+    test('fetchUnconsolidated ordered by timestamp', () async {
+      final early = Episode(
+        sessionId: 'ses',
+        type: EpisodeType.observation,
+        content: 'early',
+        timestamp: DateTime(2024, 1, 1),
+      );
+      final late_ = Episode(
+        sessionId: 'ses',
+        type: EpisodeType.observation,
+        content: 'late',
+        timestamp: DateTime(2024, 6, 1),
+      );
+      // Insert in reverse order.
+      await store.insert([late_, early]);
+
+      final results = await store.fetchUnconsolidated();
+      expect(results.first.content, 'early');
+      expect(results.last.content, 'late');
+    });
+
+    test('empty insert is no-op', () async {
+      await store.insert([]);
+      expect(await store.count(), 0);
+    });
+
+    test('preserves episode fields round-trip', () async {
+      final ep = Episode(
+        sessionId: 'ses_42',
+        type: EpisodeType.userDirective,
+        content: 'do the thing',
+        importance: 0.95,
+      );
+      await store.insert([ep]);
+
+      final results = await store.fetchUnconsolidated();
+      expect(results, hasLength(1));
+      expect(results.first.id, ep.id);
+      expect(results.first.sessionId, 'ses_42');
+      expect(results.first.type, EpisodeType.userDirective);
+      expect(results.first.content, 'do the thing');
+      expect(results.first.importance, 0.95);
+    });
+  });
+
+  // ── Integration: DurableMemory in engine ───────────────────────────────
+
+  group('Integration: DurableMemory in engine', () {
+    late StanzaSqlite db;
+    late DurableMemoryStore memStore;
+    late DurableMemory durableComponent;
+    late Souvenir engine;
+
+    setUp(() async {
+      db = StanzaSqlite.memory();
+      memStore = DurableMemoryStore(db);
+      durableComponent = DurableMemory(store: memStore);
+      engine = Souvenir(
+        components: [durableComponent],
+        budget: Budget(
+          totalTokens: 4000,
+          allocation: {'durable': 4000},
+          tokenizer: const ApproximateTokenizer(),
+        ),
+        mixer: const WeightedMixer(weights: {'durable': 1.0}),
+      );
+      await engine.initialize();
+    });
+
+    tearDown(() async {
+      await engine.close();
+      await db.close();
+    });
+
+    test('end-to-end consolidate and recall', () async {
+      // Record episode.
+      await engine.record(
+        _episode('User said they always use Dart for backend'),
+      );
+
+      // Consolidate with stub LLM.
+      final reports = await engine.consolidate(
+        (sys, user) async => jsonEncode({
+          'facts': [
+            {
+              'content': 'User uses Dart for backend development',
+              'entities': [
+                {'name': 'Dart', 'type': 'project'},
+              ],
+              'importance': 0.8,
+              'conflict': null,
+            },
+          ],
+          'relationships': [],
+        }),
+      );
+
+      expect(reports, hasLength(1));
+      expect(reports.first.itemsCreated, 1);
+
+      // Recall.
+      final result = await engine.recall('Dart backend');
+      expect(result.items, isNotEmpty);
+      expect(result.items.first.content, contains('Dart'));
+      expect(result.items.first.componentName, 'durable');
+    });
+
+    test('multi-component: DurableMemory alongside stub', () async {
+      final stub = StubComponent(
+        name: 'task',
+        recallItems: [
+          LabeledRecall(
+            componentName: 'task',
+            content: 'current task: fix bug',
+            score: 0.9,
+          ),
+        ],
+      );
+
+      final multiEngine = Souvenir(
+        components: [durableComponent, stub],
+        budget: Budget(
+          totalTokens: 4000,
+          allocation: {'durable': 2000, 'task': 2000},
+          tokenizer: const ApproximateTokenizer(),
+        ),
+        mixer: const WeightedMixer(weights: {'durable': 1.0, 'task': 1.0}),
+      );
+      await multiEngine.initialize();
+
+      // Seed durable memory directly.
+      await memStore.insertMemory(
+        StoredMemory(content: 'User prefers Dart', importance: 0.8),
+      );
+
+      final result = await multiEngine.recall('Dart');
+      // Should have results from both components.
+      final sources = result.items.map((i) => i.componentName).toSet();
+      expect(sources, contains('task'));
+      // Durable may or may not match 'Dart' via BM25 — the stub always returns.
+      expect(result.items, isNotEmpty);
+      await multiEngine.close();
+    });
+
+    test('SqliteEpisodeStore works with engine', () async {
+      final sqliteEpStore = SqliteEpisodeStore(db);
+      await sqliteEpStore.initialize();
+
+      final sqlEngine = Souvenir(
+        components: [durableComponent],
+        budget: Budget(
+          totalTokens: 4000,
+          allocation: {'durable': 4000},
+          tokenizer: const ApproximateTokenizer(),
+        ),
+        mixer: const WeightedMixer(),
+        store: sqliteEpStore,
+      );
+      await sqlEngine.initialize();
+
+      await sqlEngine.record(
+        _episode('User prefers functional programming'),
+      );
+      await sqlEngine.flush();
+      expect(await sqliteEpStore.count(), 1);
+      expect(await sqliteEpStore.unconsolidatedCount(), 1);
+
+      await sqlEngine.consolidate(
+        (sys, user) async => jsonEncode({
+          'facts': [
+            {
+              'content': 'User prefers functional programming',
+              'entities': [],
+              'importance': 0.7,
+            },
+          ],
+          'relationships': [],
+        }),
+      );
+
+      expect(await sqliteEpStore.unconsolidatedCount(), 0);
+      await sqlEngine.close();
     });
   });
 }

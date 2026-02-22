@@ -11,6 +11,15 @@ export 'src/memory_component.dart';
 export 'src/mixer.dart';
 export 'src/tokenizer.dart';
 
+// Durable memory component.
+export 'src/durable/durable_memory.dart';
+export 'src/durable/durable_memory_config.dart';
+export 'src/durable/durable_memory_store.dart';
+export 'src/durable/stored_memory.dart';
+
+// SQLite episode store.
+export 'src/sqlite_episode_store.dart';
+
 // Carried from v1 (unchanged).
 export 'src/embedding_provider.dart';
 export 'src/llm_callback.dart';
