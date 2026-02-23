@@ -9,8 +9,10 @@ class MemoryEntry {
   /// The memory content, written in the agent's own voice.
   final String content;
 
+  /// UTC timestamp when this entry was created.
   final DateTime createdAt;
 
+  /// Creates a memory entry with the given [type], [content], and [createdAt] time.
   const MemoryEntry({
     required this.type,
     required this.content,

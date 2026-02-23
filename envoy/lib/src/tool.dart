@@ -21,6 +21,7 @@ enum ToolPermission {
 
 /// The result of executing a tool.
 class ToolResult {
+  /// Whether the tool execution succeeded.
   final bool success;
 
   /// JSON string or plain text output returned to the LLM.
@@ -29,10 +30,12 @@ class ToolResult {
   /// Error message, populated only when [success] is false.
   final String? error;
 
+  /// Creates a successful result with the given [output] text.
   const ToolResult.ok(this.output)
       : success = true,
         error = null;
 
+  /// Creates a failed result with the given [error] message.
   const ToolResult.err(String this.error)
       : success = false,
         output = '';

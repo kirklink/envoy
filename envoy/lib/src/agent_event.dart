@@ -6,7 +6,10 @@ import 'run_result.dart';
 /// Each subtype has a [type] discriminator for serialization (e.g. SSE
 /// event names) and a [toJson] method for wire encoding.
 sealed class AgentEvent {
+  /// UTC timestamp recorded when this event was created.
   final DateTime timestamp;
+
+  /// Creates an event with the current UTC time as its [timestamp].
   AgentEvent() : timestamp = DateTime.now().toUtc();
 
   /// Discriminator string used as the SSE event name.
@@ -18,7 +21,10 @@ sealed class AgentEvent {
 
 /// Emitted when [EnvoyAgent.run] begins processing a task.
 class AgentStarted extends AgentEvent {
+  /// The task string passed to [EnvoyAgent.run].
   final String task;
+
+  /// Creates an event indicating a new agent run has started with [task].
   AgentStarted(this.task);
 
   @override
@@ -33,9 +39,16 @@ class AgentStarted extends AgentEvent {
 
 /// Emitted before a tool's [execute] method is called.
 class AgentToolCallStarted extends AgentEvent {
+  /// The [Tool.name] of the tool being invoked.
   final String toolName;
+
+  /// The input map the LLM supplied for this tool call.
   final Map<String, dynamic> input;
+
+  /// The agent's reasoning text from the LLM response, if present.
   final String? reasoning;
+
+  /// Creates an event indicating that a tool call is about to execute.
   AgentToolCallStarted(this.toolName, this.input, {this.reasoning});
 
   @override
@@ -52,10 +65,19 @@ class AgentToolCallStarted extends AgentEvent {
 
 /// Emitted after a tool's [execute] method returns (or validation fails).
 class AgentToolCallCompleted extends AgentEvent {
+  /// The [Tool.name] of the tool that was invoked.
   final String toolName;
+
+  /// Whether the tool execution succeeded.
   final bool success;
+
+  /// The tool output (on success) or error message (on failure).
   final String output;
+
+  /// Wall-clock time the tool execution took.
   final Duration duration;
+
+  /// Creates an event indicating that a tool call has finished executing.
   AgentToolCallCompleted(
     this.toolName, {
     required this.success,
@@ -78,8 +100,13 @@ class AgentToolCallCompleted extends AgentEvent {
 
 /// Emitted when a message is added to the conversation context.
 class AgentMessageAdded extends AgentEvent {
+  /// The message role (e.g. 'user', 'assistant').
   final String role;
+
+  /// A truncated preview of the message content.
   final String preview;
+
+  /// Creates an event indicating a message was added to the conversation.
   AgentMessageAdded(this.role, this.preview);
 
   @override
@@ -95,13 +122,28 @@ class AgentMessageAdded extends AgentEvent {
 
 /// Emitted when [EnvoyAgent.run] finishes (success, max iterations, or error).
 class AgentCompleted extends AgentEvent {
+  /// The final text response from the agent, or empty on non-completed outcomes.
   final String response;
+
+  /// How the run concluded (completed, max iterations, or error).
   final RunOutcome outcome;
+
+  /// Number of LLM iterations used during this run.
   final int iterations;
+
+  /// Wall-clock time for the entire run.
   final Duration duration;
+
+  /// Token usage aggregated across all LLM calls in this run.
   final TokenUsage tokenUsage;
+
+  /// Total number of tool invocations during this run.
   final int toolCallCount;
+
+  /// Human-readable error message when [outcome] is [RunOutcome.error].
   final String? errorMessage;
+
+  /// Creates an event indicating that the agent run has finished.
   AgentCompleted({
     required this.response,
     required this.outcome,
@@ -134,7 +176,10 @@ class AgentCompleted extends AgentEvent {
 
 /// Emitted on non-retryable API errors during the agent loop.
 class AgentError extends AgentEvent {
+  /// Human-readable description of the error that occurred.
   final String message;
+
+  /// Creates an event indicating a non-retryable API error.
   AgentError(this.message);
 
   @override

@@ -11,7 +11,10 @@ import 'tool.dart';
 
 /// Thrown when the agent cannot complete a task within [EnvoyConfig.maxIterations].
 class EnvoyException implements Exception {
+  /// Human-readable description of the exception.
   final String message;
+
+  /// Creates an [EnvoyException] with the given [message].
   const EnvoyException(this.message);
 
   @override
@@ -20,6 +23,7 @@ class EnvoyException implements Exception {
 
 /// Configuration for an [EnvoyAgent] instance.
 class EnvoyConfig {
+  /// Anthropic API key used for authentication.
   final String apiKey;
 
   /// Anthropic model ID to use.
@@ -31,6 +35,7 @@ class EnvoyConfig {
   /// Maximum LLM iterations per [EnvoyAgent.run] call before giving up.
   final int maxIterations;
 
+  /// Creates an agent configuration with the given [apiKey] and optional overrides.
   const EnvoyConfig({
     required this.apiKey,
     this.model = 'claude-opus-4-6',
@@ -56,6 +61,7 @@ typedef OnToolCall = void Function(
 ///
 /// Phase 1: in-memory only, no persistence, streaming deferred to Phase 2.
 class EnvoyAgent {
+  /// The configuration controlling model, token budget, and iteration limit.
   final EnvoyConfig config;
   final anthropic.AnthropicClient _client;
   final EnvoyContext _context;
@@ -86,6 +92,10 @@ class EnvoyAgent {
   static String _preview(String s, [int max = 200]) =>
       s.length > max ? '${s.substring(0, max)}...' : s;
 
+  /// Creates an agent with the given [config], optional [tools], and callbacks.
+  ///
+  /// If [context] is omitted a fresh [EnvoyContext] is created. If [memory]
+  /// is provided, [reflect] can persist self-knowledge after a run.
   EnvoyAgent(
     this.config, {
     List<Tool> tools = const [],
