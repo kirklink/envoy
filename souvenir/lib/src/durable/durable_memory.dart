@@ -75,7 +75,7 @@ class DurableMemory implements MemoryComponent {
 
   @override
   Future<void> initialize() async {
-    await _store.initialize();
+    _store.initialize();
   }
 
   @override
@@ -92,7 +92,7 @@ class DurableMemory implements MemoryComponent {
     ComponentBudget budget,
   ) async {
     if (episodes.isEmpty) {
-      final decayed = await _applyDecay();
+      final decayed = _applyDecay();
       return ConsolidationReport(
         componentName: name,
         itemsDecayed: decayed,
@@ -112,7 +112,7 @@ class DurableMemory implements MemoryComponent {
       extraction = _parseJson(response);
     } catch (_) {
       // LLM failure or parse error — skip this batch, apply decay only.
-      final decayed = await _applyDecay();
+      final decayed = _applyDecay();
       return ConsolidationReport(
         componentName: name,
         itemsDecayed: decayed,
@@ -140,12 +140,12 @@ class DurableMemory implements MemoryComponent {
           final entityName = e['name'] as String;
           final typeName = e['type'] as String? ?? 'concept';
 
-          final existing = await _store.findEntityByName(entityName);
+          final existing = _store.findEntityByName(entityName);
           if (existing != null) {
             entityIds.add(existing.id);
           } else {
             final id = Ulid().toString();
-            await _store.upsertEntity(
+            _store.upsertEntity(
               id: id,
               name: entityName,
               type: typeName,
@@ -158,7 +158,7 @@ class DurableMemory implements MemoryComponent {
       final episodeIds = episodes.map((ep) => ep.id).toList();
 
       // Search for existing similar memory.
-      final existing = await _store.searchMemories(content, limit: 1);
+      final existing = _store.searchMemories(content, limit: 1);
 
       if (existing.isNotEmpty &&
           existing.first.score > _config.mergeThreshold) {
@@ -171,7 +171,7 @@ class DurableMemory implements MemoryComponent {
             // boost importance.
             if (match.importance >= importance) continue;
             // Fall through to update logic.
-            await _store.updateMemory(
+            _store.updateMemory(
               match.id,
               importance: math.max(match.importance, importance),
               entityIds: {...match.entityIds, ...entityIds}.toList(),
@@ -191,8 +191,8 @@ class DurableMemory implements MemoryComponent {
               entityIds: entityIds,
               sourceEpisodeIds: episodeIds,
             );
-            await _store.insertMemory(newMemory);
-            await _store.supersede(match.id, newMemory.id);
+            _store.insertMemory(newMemory);
+            _store.supersede(match.id, newMemory.id);
             toEmbed.add((id: newMemory.id, content: content));
             created++;
 
@@ -208,7 +208,7 @@ class DurableMemory implements MemoryComponent {
               ...episodeIds,
             }.toList();
 
-            await _store.updateMemory(
+            _store.updateMemory(
               match.id,
               content: content,
               importance: math.max(match.importance, importance),
@@ -226,7 +226,7 @@ class DurableMemory implements MemoryComponent {
           entityIds: entityIds,
           sourceEpisodeIds: episodeIds,
         );
-        await _store.insertMemory(memory);
+        _store.insertMemory(memory);
         toEmbed.add((id: memory.id, content: content));
         created++;
       }
@@ -243,21 +243,21 @@ class DurableMemory implements MemoryComponent {
           _config.defaultConfidence;
 
       // Resolve entity IDs (create if needed).
-      var fromEntity = await _store.findEntityByName(fromName);
+      var fromEntity = _store.findEntityByName(fromName);
       if (fromEntity == null) {
         final id = Ulid().toString();
-        await _store.upsertEntity(id: id, name: fromName, type: 'concept');
+        _store.upsertEntity(id: id, name: fromName, type: 'concept');
         fromEntity = (id: id, name: fromName, type: 'concept');
       }
 
-      var toEntity = await _store.findEntityByName(toName);
+      var toEntity = _store.findEntityByName(toName);
       if (toEntity == null) {
         final id = Ulid().toString();
-        await _store.upsertEntity(id: id, name: toName, type: 'concept');
+        _store.upsertEntity(id: id, name: toName, type: 'concept');
         toEntity = (id: id, name: toName, type: 'concept');
       }
 
-      await _store.upsertRelationship(
+      _store.upsertRelationship(
         fromEntity: fromEntity.id,
         toEntity: toEntity.id,
         relation: relation,
@@ -266,14 +266,14 @@ class DurableMemory implements MemoryComponent {
     }
 
     // Importance decay.
-    final decayed = await _applyDecay();
+    final decayed = _applyDecay();
 
     // Generate embeddings.
     if (_embeddings != null) {
       for (final mem in toEmbed) {
         try {
           final vector = await _embeddings!.embed(mem.content);
-          await _store.updateMemoryEmbedding(mem.id, vector);
+          _store.updateMemoryEmbedding(mem.id, vector);
         } catch (_) {
           // Embedding failure is non-fatal.
         }
@@ -299,7 +299,7 @@ class DurableMemory implements MemoryComponent {
     final rankedLists = <List<_RankedCandidate>>[];
 
     // Signal 1: BM25 over durable memories.
-    final bm25Results = await _store.searchMemories(
+    final bm25Results = _store.searchMemories(
       query,
       limit: _config.recallTopK * 2,
     );
@@ -371,14 +371,14 @@ class DurableMemory implements MemoryComponent {
     }
 
     // Update access stats.
-    await _store.updateAccessStats(accessedIds);
+    _store.updateAccessStats(accessedIds);
 
     return results;
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────
 
-  Future<int> _applyDecay() async {
+  int _applyDecay() {
     return _store.applyImportanceDecay(
       inactivePeriod: _config.decayInactivePeriod,
       decayRate: _config.importanceDecayRate,
@@ -387,7 +387,7 @@ class DurableMemory implements MemoryComponent {
 
   /// 1-hop entity graph expansion.
   Future<List<_RankedCandidate>> _expandEntityGraph(String query) async {
-    final matchedEntities = await _store.findEntitiesByNameMatch(query);
+    final matchedEntities = _store.findEntitiesByNameMatch(query);
     if (matchedEntities.isEmpty) return [];
 
     final allEntityIds = <String>{};
@@ -397,7 +397,7 @@ class DurableMemory implements MemoryComponent {
       allEntityIds.add(entity.id);
       confidenceByEntityId[entity.id] = 1.0;
 
-      final rels = await _store.findRelationshipsForEntity(entity.id);
+      final rels = _store.findRelationshipsForEntity(entity.id);
       for (final rel in rels) {
         final connectedId =
             rel.fromEntity == entity.id ? rel.toEntity : rel.fromEntity;
@@ -409,7 +409,7 @@ class DurableMemory implements MemoryComponent {
       }
     }
 
-    final memories = await _store.findMemoriesByEntityIds(
+    final memories = _store.findMemoriesByEntityIds(
       allEntityIds.toList(),
     );
     if (memories.isEmpty) return [];
@@ -442,7 +442,7 @@ class DurableMemory implements MemoryComponent {
   /// Vector similarity search.
   Future<List<_RankedCandidate>> _searchByVector(String query) async {
     final queryEmbedding = await _embeddings!.embed(query);
-    final memories = await _store.loadMemoriesWithEmbeddings();
+    final memories = _store.loadMemoriesWithEmbeddings();
     if (memories.isEmpty) return [];
 
     final scored =

@@ -29,8 +29,11 @@ export 'src/environmental/environmental_memory.dart';
 export 'src/environmental/environmental_memory_config.dart';
 export 'src/environmental/environmental_memory_store.dart';
 
-// SQLite episode store.
-export 'src/sqlite_episode_store.dart';
+// Cellar-backed stores.
+export 'src/cellar_episode_store.dart';
+export 'src/environmental/cellar_environmental_memory_store.dart';
+export 'src/souvenir_cellar.dart';
+export 'src/task/cellar_task_memory_store.dart';
 
 // Carried from v1 (unchanged).
 export 'src/embedding_provider.dart';

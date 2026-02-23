@@ -1,33 +1,32 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:stanza/stanza.dart';
-import 'package:stanza_sqlite/stanza_sqlite.dart';
+import 'package:sqlite3/sqlite3.dart' as sqlite3;
 
 import 'stored_memory.dart';
 
-/// FTS5 index for full-text search over durable memory content.
-const _durableMemoriesFts = Fts5Index(
-  sourceTable: 'durable_memories',
-  columns: ['content'],
-  tokenize: 'porter unicode61',
-);
-
 /// Low-level SQLite operations for the durable memory component.
 ///
-/// All tables are prefixed with `durable_` to avoid collisions with other
-/// components sharing the same database. Uses raw SQL — no code gen.
+/// All tables use an optional [prefix] to support multi-agent isolation in a
+/// shared database. Uses raw SQL via `sqlite3.Database` — no code gen.
 class DurableMemoryStore {
-  final DatabaseAdapter _db;
+  final sqlite3.Database _db;
+  final String _prefix;
 
-  DurableMemoryStore(this._db);
+  /// The table name for durable memories (with prefix).
+  String get _memories => '${_prefix}durable_memories';
+  String get _memoriesFts => '${_prefix}durable_memories_fts';
+  String get _entities => '${_prefix}durable_entities';
+  String get _relationships => '${_prefix}durable_relationships';
+
+  DurableMemoryStore(this._db, {String prefix = ''}) : _prefix = prefix;
 
   // ── Initialization ──────────────────────────────────────────────────────
 
   /// Creates all tables and FTS5 indexes. Idempotent.
-  Future<void> initialize() async {
-    await _db.rawExecute('''
-      CREATE TABLE IF NOT EXISTS durable_memories (
+  void initialize() {
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS $_memories (
         id            TEXT PRIMARY KEY,
         content       TEXT NOT NULL,
         entity_ids    TEXT,
@@ -45,18 +44,18 @@ class DurableMemoryStore {
       )
     ''');
 
-    await _createFts5IfNeeded();
+    _createFts5IfNeeded();
 
-    await _db.rawExecute('''
-      CREATE TABLE IF NOT EXISTS durable_entities (
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS $_entities (
         id    TEXT PRIMARY KEY,
         name  TEXT NOT NULL UNIQUE,
         type  TEXT NOT NULL
       )
     ''');
 
-    await _db.rawExecute('''
-      CREATE TABLE IF NOT EXISTS durable_relationships (
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS $_relationships (
         from_entity TEXT NOT NULL,
         to_entity   TEXT NOT NULL,
         relation    TEXT NOT NULL,
@@ -70,233 +69,217 @@ class DurableMemoryStore {
   // ── Memory operations ─────────────────────────────────────────────────
 
   /// Inserts a durable memory.
-  Future<void> insertMemory(StoredMemory memory) async {
-    await _db.rawExecute(
-      'INSERT INTO durable_memories '
+  void insertMemory(StoredMemory memory) {
+    _db.execute(
+      'INSERT INTO $_memories '
       '(id, content, entity_ids, importance, created_at, updated_at, '
       'source_ids, access_count, status, superseded_by, valid_at, invalid_at) '
-      'VALUES (:id, :content, :entityIds, :importance, :createdAt, :updatedAt, '
-      ':sourceIds, :accessCount, :status, :supersededBy, :validAt, :invalidAt)',
-      parameters: {
-        ':id': memory.id,
-        ':content': memory.content,
-        ':entityIds': memory.entityIds.isEmpty
-            ? null
-            : jsonEncode(memory.entityIds),
-        ':importance': memory.importance,
-        ':createdAt': memory.createdAt.toUtc().toIso8601String(),
-        ':updatedAt': memory.updatedAt.toUtc().toIso8601String(),
-        ':sourceIds': memory.sourceEpisodeIds.isEmpty
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        memory.id,
+        memory.content,
+        memory.entityIds.isEmpty ? null : jsonEncode(memory.entityIds),
+        memory.importance,
+        memory.createdAt.toUtc().toIso8601String(),
+        memory.updatedAt.toUtc().toIso8601String(),
+        memory.sourceEpisodeIds.isEmpty
             ? null
             : jsonEncode(memory.sourceEpisodeIds),
-        ':accessCount': memory.accessCount,
-        ':status': memory.status.name,
-        ':supersededBy': memory.supersededBy,
-        ':validAt': memory.validAt?.toUtc().toIso8601String(),
-        ':invalidAt': memory.invalidAt?.toUtc().toIso8601String(),
-      },
+        memory.accessCount,
+        memory.status.name,
+        memory.supersededBy,
+        memory.validAt?.toUtc().toIso8601String(),
+        memory.invalidAt?.toUtc().toIso8601String(),
+      ],
     );
   }
 
   /// Partially updates a memory. Only non-null fields are updated.
-  Future<void> updateMemory(
+  void updateMemory(
     String id, {
     String? content,
     double? importance,
     List<String>? entityIds,
     List<String>? sourceIds,
-  }) async {
+  }) {
     final sets = <String>[];
-    final params = <String, dynamic>{':id': id};
+    final params = <Object?>[];
 
     if (content != null) {
-      sets.add('content = :content');
-      params[':content'] = content;
+      sets.add('content = ?');
+      params.add(content);
     }
     if (importance != null) {
-      sets.add('importance = :importance');
-      params[':importance'] = importance;
+      sets.add('importance = ?');
+      params.add(importance);
     }
     if (entityIds != null) {
-      sets.add('entity_ids = :entityIds');
-      params[':entityIds'] = jsonEncode(entityIds);
+      sets.add('entity_ids = ?');
+      params.add(jsonEncode(entityIds));
     }
     if (sourceIds != null) {
-      sets.add('source_ids = :sourceIds');
-      params[':sourceIds'] = jsonEncode(sourceIds);
+      sets.add('source_ids = ?');
+      params.add(jsonEncode(sourceIds));
     }
 
     // Always bump updated_at.
-    sets.add('updated_at = :updatedAt');
-    params[':updatedAt'] = DateTime.now().toUtc().toIso8601String();
+    sets.add('updated_at = ?');
+    params.add(DateTime.now().toUtc().toIso8601String());
 
     if (sets.isEmpty) return;
 
-    await _db.rawExecute(
-      'UPDATE durable_memories SET ${sets.join(', ')} WHERE id = :id',
-      parameters: params,
+    params.add(id);
+    _db.execute(
+      'UPDATE $_memories SET ${sets.join(', ')} WHERE id = ?',
+      params,
     );
   }
 
   /// Full-text search over active durable memories using BM25 ranking.
-  Future<List<({StoredMemory memory, double score})>> searchMemories(
+  List<({StoredMemory memory, double score})> searchMemories(
     String query, {
     int limit = 10,
-  }) async {
+  }) {
     final sanitized = _sanitizeFtsQuery(query);
-    final result = await _db.rawExecute(
-      'SELECT m.*, bm25(${_durableMemoriesFts.tableName}) AS rank '
-      'FROM durable_memories m '
-      'JOIN ${_durableMemoriesFts.tableName} '
-      'ON m.rowid = ${_durableMemoriesFts.tableName}.rowid '
-      'WHERE ${_durableMemoriesFts.tableName} MATCH :query '
+    final result = _db.select(
+      'SELECT m.*, bm25($_memoriesFts) AS rank '
+      'FROM $_memories m '
+      'JOIN $_memoriesFts ON m.rowid = $_memoriesFts.rowid '
+      'WHERE $_memoriesFts MATCH ? '
       "AND m.status = 'active' "
       'ORDER BY rank '
-      'LIMIT :limit',
-      parameters: {':query': sanitized, ':limit': limit},
+      'LIMIT ?',
+      [sanitized, limit],
     );
 
-    return result.rows.map((row) {
-      final score = -(row['rank'] as num).toDouble();
-      return (memory: _rowToStoredMemory(row), score: score);
+    return result.map((row) {
+      final m = Map<String, dynamic>.of(row);
+      final score = -(m.remove('rank') as num).toDouble();
+      return (memory: _rowToStoredMemory(m), score: score);
     }).toList();
   }
 
   /// Returns active memories ordered by importance (descending).
-  Future<List<StoredMemory>> listActiveMemories({int limit = 200}) async {
-    final result = await _db.rawExecute(
-      "SELECT * FROM durable_memories WHERE status = 'active' "
-      'ORDER BY importance DESC LIMIT :limit',
-      parameters: {':limit': limit},
+  List<StoredMemory> listActiveMemories({int limit = 200}) {
+    final result = _db.select(
+      "SELECT * FROM $_memories WHERE status = 'active' "
+      'ORDER BY importance DESC LIMIT ?',
+      [limit],
     );
-    return result.rows.map(_rowToStoredMemory).toList();
+    return result.map((row) => _rowToStoredMemory(Map.of(row))).toList();
   }
 
   /// Fetches memories by their IDs, preserving the given order.
-  Future<List<StoredMemory>> findMemoriesByIds(List<String> ids) async {
+  List<StoredMemory> findMemoriesByIds(List<String> ids) {
     if (ids.isEmpty) return [];
 
-    final placeholders = <String>[];
-    final params = <String, dynamic>{};
-    for (var i = 0; i < ids.length; i++) {
-      placeholders.add(':id$i');
-      params[':id$i'] = ids[i];
-    }
-
-    final result = await _db.rawExecute(
-      'SELECT * FROM durable_memories '
-      'WHERE id IN (${placeholders.join(', ')})',
-      parameters: params,
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    final result = _db.select(
+      'SELECT * FROM $_memories WHERE id IN ($placeholders)',
+      ids,
     );
 
     final byId = {
-      for (final row in result.rows) row['id'] as String: _rowToStoredMemory(row),
+      for (final row in result)
+        row['id'] as String: _rowToStoredMemory(Map.of(row)),
     };
     return ids.where(byId.containsKey).map((id) => byId[id]!).toList();
   }
 
   /// Finds active memories associated with any of the given entity IDs.
-  Future<List<StoredMemory>> findMemoriesByEntityIds(
-    List<String> entityIds,
-  ) async {
+  List<StoredMemory> findMemoriesByEntityIds(List<String> entityIds) {
     if (entityIds.isEmpty) return [];
 
-    final placeholders = <String>[];
-    final params = <String, dynamic>{};
-    for (var i = 0; i < entityIds.length; i++) {
-      placeholders.add(':eid$i');
-      params[':eid$i'] = entityIds[i];
-    }
-
-    final result = await _db.rawExecute(
-      'SELECT DISTINCT m.* FROM durable_memories m, json_each(m.entity_ids) je '
-      "WHERE je.value IN (${placeholders.join(', ')}) AND m.status = 'active'",
-      parameters: params,
+    final placeholders = List.filled(entityIds.length, '?').join(', ');
+    final result = _db.select(
+      'SELECT DISTINCT m.* FROM $_memories m, json_each(m.entity_ids) je '
+      "WHERE je.value IN ($placeholders) AND m.status = 'active'",
+      entityIds,
     );
 
-    return result.rows.map(_rowToStoredMemory).toList();
+    return result.map((row) => _rowToStoredMemory(Map.of(row))).toList();
   }
 
   /// Bumps access_count and last_accessed for memories.
-  Future<void> updateAccessStats(List<String> ids) async {
+  void updateAccessStats(List<String> ids) {
     if (ids.isEmpty) return;
 
     final now = DateTime.now().toUtc().toIso8601String();
     for (final id in ids) {
-      await _db.rawExecute(
-        'UPDATE durable_memories SET access_count = access_count + 1, '
-        'last_accessed = :now WHERE id = :id',
-        parameters: {':now': now, ':id': id},
+      _db.execute(
+        'UPDATE $_memories SET access_count = access_count + 1, '
+        'last_accessed = ? WHERE id = ?',
+        [now, id],
       );
     }
   }
 
   /// Marks a memory as superseded by another.
-  Future<void> supersede(String oldId, String newId) async {
-    await _db.rawExecute(
-      "UPDATE durable_memories SET status = 'superseded', "
-      'superseded_by = :newId, '
-      'updated_at = :now '
-      'WHERE id = :oldId',
-      parameters: {
-        ':newId': newId,
-        ':oldId': oldId,
-        ':now': DateTime.now().toUtc().toIso8601String(),
-      },
+  void supersede(String oldId, String newId) {
+    _db.execute(
+      "UPDATE $_memories SET status = 'superseded', "
+      'superseded_by = ?, '
+      'updated_at = ? '
+      'WHERE id = ?',
+      [newId, DateTime.now().toUtc().toIso8601String(), oldId],
     );
   }
 
   /// Returns the total number of active memories.
-  Future<int> activeMemoryCount() async {
-    final result = await _db.rawExecute(
-      "SELECT COUNT(*) as cnt FROM durable_memories WHERE status = 'active'",
+  int activeMemoryCount() {
+    final result = _db.select(
+      "SELECT COUNT(*) as cnt FROM $_memories WHERE status = 'active'",
     );
-    return result.rows.first['cnt'] as int;
+    return result.first['cnt'] as int;
   }
 
   // ── Importance decay ──────────────────────────────────────────────────
 
   /// Decays importance of active memories not accessed within
   /// [inactivePeriod]. Returns the number of memories affected.
-  Future<int> applyImportanceDecay({
+  int applyImportanceDecay({
     required Duration inactivePeriod,
     required double decayRate,
-  }) async {
+  }) {
     final cutoff =
         DateTime.now().subtract(inactivePeriod).toUtc().toIso8601String();
-    final result = await _db.rawExecute(
-      'UPDATE durable_memories SET importance = importance * :rate '
+    _db.execute(
+      'UPDATE $_memories SET importance = importance * ? '
       "WHERE status = 'active' AND "
-      '((last_accessed IS NOT NULL AND last_accessed < :cutoff) '
-      'OR (last_accessed IS NULL AND updated_at < :cutoff))',
-      parameters: {':rate': decayRate, ':cutoff': cutoff},
+      '((last_accessed IS NOT NULL AND last_accessed < ?) '
+      'OR (last_accessed IS NULL AND updated_at < ?))',
+      [decayRate, cutoff, cutoff],
     );
-    return result.affectedRows;
+    return _db.updatedRows;
   }
 
   // ── Embedding operations ──────────────────────────────────────────────
 
   /// Stores an embedding vector for a memory as a BLOB.
-  Future<void> updateMemoryEmbedding(
-    String id,
-    List<double> embedding,
-  ) async {
+  void updateMemoryEmbedding(String id, List<double> embedding) {
     final blob = _embeddingToBlob(embedding);
-    await _db.rawExecute(
-      'UPDATE durable_memories SET embedding = :embedding WHERE id = :id',
-      parameters: {':embedding': blob, ':id': id},
+    _db.execute(
+      'UPDATE $_memories SET embedding = ? WHERE id = ?',
+      [blob, id],
     );
   }
 
   /// Loads all active memories that have embeddings.
-  Future<List<({String id, String content, List<double> embedding, DateTime updatedAt, double importance, int accessCount})>>
-      loadMemoriesWithEmbeddings() async {
-    final result = await _db.rawExecute(
+  List<
+      ({
+        String id,
+        String content,
+        List<double> embedding,
+        DateTime updatedAt,
+        double importance,
+        int accessCount,
+      })> loadMemoriesWithEmbeddings() {
+    final result = _db.select(
       'SELECT id, content, embedding, updated_at, importance, access_count '
-      "FROM durable_memories WHERE embedding IS NOT NULL AND status = 'active'",
+      "FROM $_memories WHERE embedding IS NOT NULL AND status = 'active'",
     );
 
-    return result.rows.map((row) {
+    return result.map((row) {
       final blob = row['embedding'] as Uint8List;
       return (
         id: row['id'] as String,
@@ -313,29 +296,27 @@ class DurableMemoryStore {
 
   /// Inserts or replaces an entity (upsert by name).
   /// Returns the entity ID (existing or new).
-  Future<String> upsertEntity({
+  String upsertEntity({
     required String id,
     required String name,
     required String type,
-  }) async {
-    await _db.rawExecute(
-      'INSERT OR REPLACE INTO durable_entities (id, name, type) '
-      'VALUES (:id, :name, :type)',
-      parameters: {':id': id, ':name': name, ':type': type},
+  }) {
+    _db.execute(
+      'INSERT OR REPLACE INTO $_entities (id, name, type) '
+      'VALUES (?, ?, ?)',
+      [id, name, type],
     );
     return id;
   }
 
   /// Finds an entity by exact name match.
-  Future<({String id, String name, String type})?> findEntityByName(
-    String name,
-  ) async {
-    final result = await _db.rawExecute(
-      'SELECT * FROM durable_entities WHERE name = :name',
-      parameters: {':name': name},
+  ({String id, String name, String type})? findEntityByName(String name) {
+    final result = _db.select(
+      'SELECT * FROM $_entities WHERE name = ?',
+      [name],
     );
     if (result.isEmpty) return null;
-    final row = result.rows.first;
+    final row = result.first;
     return (
       id: row['id'] as String,
       name: row['name'] as String,
@@ -345,15 +326,14 @@ class DurableMemoryStore {
 
   /// Finds entities whose names appear in the query text.
   /// Case-insensitive substring match.
-  Future<List<({String id, String name, String type})>>
-      findEntitiesByNameMatch(String query) async {
-    final result = await _db.rawExecute(
-      'SELECT * FROM durable_entities',
-    );
+  List<({String id, String name, String type})> findEntitiesByNameMatch(
+    String query,
+  ) {
+    final result = _db.select('SELECT * FROM $_entities');
     final lowerQuery = query.toLowerCase();
-    return result.rows
-        .where((row) =>
-            lowerQuery.contains((row['name'] as String).toLowerCase()))
+    return result
+        .where(
+            (row) => lowerQuery.contains((row['name'] as String).toLowerCase()))
         .map((row) => (
               id: row['id'] as String,
               name: row['name'] as String,
@@ -365,36 +345,41 @@ class DurableMemoryStore {
   // ── Relationship operations ───────────────────────────────────────────
 
   /// Inserts or replaces a relationship (upsert by composite PK).
-  Future<void> upsertRelationship({
+  void upsertRelationship({
     required String fromEntity,
     required String toEntity,
     required String relation,
     required double confidence,
-  }) async {
-    await _db.rawExecute(
-      'INSERT OR REPLACE INTO durable_relationships '
+  }) {
+    _db.execute(
+      'INSERT OR REPLACE INTO $_relationships '
       '(from_entity, to_entity, relation, confidence, updated_at) '
-      'VALUES (:from, :to, :rel, :conf, :updated)',
-      parameters: {
-        ':from': fromEntity,
-        ':to': toEntity,
-        ':rel': relation,
-        ':conf': confidence,
-        ':updated': DateTime.now().toUtc().toIso8601String(),
-      },
+      'VALUES (?, ?, ?, ?, ?)',
+      [
+        fromEntity,
+        toEntity,
+        relation,
+        confidence,
+        DateTime.now().toUtc().toIso8601String(),
+      ],
     );
   }
 
   /// Returns all relationships connected to [entityId] (either direction).
-  Future<List<({String fromEntity, String toEntity, String relation, double confidence})>>
-      findRelationshipsForEntity(String entityId) async {
-    final result = await _db.rawExecute(
-      'SELECT * FROM durable_relationships '
-      'WHERE from_entity = :id OR to_entity = :id',
-      parameters: {':id': entityId},
+  List<
+      ({
+        String fromEntity,
+        String toEntity,
+        String relation,
+        double confidence,
+      })> findRelationshipsForEntity(String entityId) {
+    final result = _db.select(
+      'SELECT * FROM $_relationships '
+      'WHERE from_entity = ? OR to_entity = ?',
+      [entityId, entityId],
     );
 
-    return result.rows
+    return result
         .map((row) => (
               fromEntity: row['from_entity'] as String,
               toEntity: row['to_entity'] as String,
@@ -439,10 +424,6 @@ class DurableMemoryStore {
   }
 
   /// Sanitizes a raw text string for use in FTS5 MATCH queries.
-  ///
-  /// Uses OR logic so any matching token triggers a result. This is
-  /// important for conflict detection during consolidation where the new
-  /// and existing content may share only a few key terms.
   static String _sanitizeFtsQuery(String raw) {
     final tokens = raw
         .replaceAll(RegExp(r'[^\w\s]'), ' ')
@@ -464,22 +445,46 @@ class DurableMemoryStore {
     return aligned.toList();
   }
 
-  Future<void> _createFts5IfNeeded() async {
-    final exists = await _fts5TableExists(_durableMemoriesFts.tableName);
-    if (!exists) {
-      await _db.rawExecute(SqliteDdl.createFts5Table(_durableMemoriesFts));
-      for (final trigger
-          in SqliteDdl.createFts5Triggers(_durableMemoriesFts)) {
-        await _db.rawExecute(trigger);
-      }
-    }
-  }
-
-  Future<bool> _fts5TableExists(String tableName) async {
-    final result = await _db.rawExecute(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = :name",
-      parameters: {':name': tableName},
+  void _createFts5IfNeeded() {
+    final result = _db.select(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      [_memoriesFts],
     );
-    return result.isNotEmpty;
+    if (result.isEmpty) {
+      _db.execute(
+        'CREATE VIRTUAL TABLE $_memoriesFts USING fts5('
+        'content, '
+        "content='$_memories', "
+        "content_rowid='rowid', "
+        'tokenize="porter unicode61"'
+        ')',
+      );
+
+      // Insert trigger.
+      _db.execute('''
+        CREATE TRIGGER IF NOT EXISTS ${_memories}_ai AFTER INSERT ON $_memories BEGIN
+          INSERT INTO $_memoriesFts(rowid, content)
+          VALUES (new.rowid, new.content);
+        END
+      ''');
+
+      // Delete trigger.
+      _db.execute('''
+        CREATE TRIGGER IF NOT EXISTS ${_memories}_ad AFTER DELETE ON $_memories BEGIN
+          INSERT INTO $_memoriesFts($_memoriesFts, rowid, content)
+          VALUES('delete', old.rowid, old.content);
+        END
+      ''');
+
+      // Update trigger.
+      _db.execute('''
+        CREATE TRIGGER IF NOT EXISTS ${_memories}_au AFTER UPDATE ON $_memories BEGIN
+          INSERT INTO $_memoriesFts($_memoriesFts, rowid, content)
+          VALUES('delete', old.rowid, old.content);
+          INSERT INTO $_memoriesFts(rowid, content)
+          VALUES (new.rowid, new.content);
+        END
+      ''');
+    }
   }
 }

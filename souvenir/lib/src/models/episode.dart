@@ -1,11 +1,6 @@
 import 'package:ulid/ulid.dart';
 
-import '../config.dart';
-
 /// Type of episodic event.
-///
-/// Default importance values are configured via [SouvenirConfig] and applied
-/// when an [Episode] is created without an explicit importance value.
 enum EpisodeType {
   conversation,
   observation,
@@ -31,9 +26,7 @@ class Episode {
 
   /// Creates an episode.
   ///
-  /// When [importance] is null, the default importance for the episode's [type]
-  /// is resolved from [config]. If [config] is also null, built-in defaults
-  /// matching the original heuristics are used.
+  /// When [importance] is null, built-in defaults are used.
   Episode({
     String? id,
     required this.sessionId,
@@ -44,12 +37,9 @@ class Episode {
     this.accessCount = 0,
     this.lastAccessed,
     this.consolidated = false,
-    SouvenirConfig? config,
   })  : id = id ?? Ulid().toString(),
         timestamp = timestamp ?? DateTime.now(),
-        importance = importance ??
-            (config?.importanceForEpisodeType(type.name) ??
-                _builtInImportance(type));
+        importance = importance ?? _builtInImportance(type);
 
   /// Built-in fallback importance (matches original enum values).
   static double _builtInImportance(EpisodeType type) {

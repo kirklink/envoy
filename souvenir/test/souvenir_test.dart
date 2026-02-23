@@ -1,7 +1,8 @@
 import 'dart:convert';
 
 import 'package:souvenir/souvenir.dart';
-import 'package:stanza_sqlite/stanza_sqlite.dart';
+import 'package:cellar/cellar.dart';
+import 'package:sqlite3/sqlite3.dart' as sqlite3;
 import 'package:test/test.dart';
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
@@ -994,72 +995,72 @@ void main() {
   // ── DurableMemoryStore ─────────────────────────────────────────────────
 
   group('DurableMemoryStore', () {
-    late StanzaSqlite db;
+    late sqlite3.Database db;
     late DurableMemoryStore store;
 
-    setUp(() async {
-      db = StanzaSqlite.memory();
+    setUp(() {
+      db = sqlite3.sqlite3.openInMemory();
       store = DurableMemoryStore(db);
-      await store.initialize();
+      store.initialize();
     });
 
-    tearDown(() async {
-      await db.close();
+    tearDown(() {
+      db.dispose();
     });
 
     test('initialize creates tables idempotently', () async {
       // Second call should not throw.
-      await store.initialize();
-      expect(await store.activeMemoryCount(), 0);
+      store.initialize();
+      expect(store.activeMemoryCount(), 0);
     });
 
     test('insertMemory and activeMemoryCount', () async {
-      await store.insertMemory(StoredMemory(content: 'fact one'));
-      await store.insertMemory(StoredMemory(content: 'fact two'));
-      expect(await store.activeMemoryCount(), 2);
+      store.insertMemory(StoredMemory(content: 'fact one'));
+      store.insertMemory(StoredMemory(content: 'fact two'));
+      expect(store.activeMemoryCount(), 2);
     });
 
     test('searchMemories returns BM25-ranked results', () async {
-      await store.insertMemory(
+      store.insertMemory(
         StoredMemory(content: 'Dart is a programming language'),
       );
-      await store.insertMemory(
+      store.insertMemory(
         StoredMemory(content: 'Flutter uses Dart for development'),
       );
-      await store.insertMemory(
+      store.insertMemory(
         StoredMemory(content: 'Python is popular for data science'),
       );
 
-      final results = await store.searchMemories('Dart programming');
+      final results = store.searchMemories('Dart programming');
       expect(results, isNotEmpty);
       expect(results.first.memory.content, contains('Dart'));
       expect(results.first.score, greaterThan(0));
     });
 
     test('searchMemories excludes non-active memories', () async {
-      await store.insertMemory(
+      store.insertMemory(
         StoredMemory(content: 'old fact about Dart', status: MemoryStatus.superseded),
       );
-      await store.insertMemory(
+      store.insertMemory(
         StoredMemory(content: 'new fact about Dart'),
       );
 
-      final results = await store.searchMemories('Dart');
+      final results = store.searchMemories('Dart');
       expect(results, hasLength(1));
       expect(results.first.memory.content, 'new fact about Dart');
     });
 
     test('updateMemory updates specified fields', () async {
       final mem = StoredMemory(content: 'original');
-      await store.insertMemory(mem);
+      store.insertMemory(mem);
 
-      await store.updateMemory(
+      store.updateMemory(
         mem.id,
         content: 'updated content',
         importance: 0.9,
       );
 
-      final found = await store.findMemoriesByIds([mem.id]);
+      final found = store.findMemoriesByIds([mem.id]);
       expect(found, hasLength(1));
       expect(found.first.content, 'updated content');
       expect(found.first.importance, 0.9);
@@ -1069,34 +1070,34 @@ void main() {
       final m1 = StoredMemory(content: 'first');
       final m2 = StoredMemory(content: 'second');
       final m3 = StoredMemory(content: 'third');
-      await store.insertMemory(m1);
-      await store.insertMemory(m2);
-      await store.insertMemory(m3);
+      store.insertMemory(m1);
+      store.insertMemory(m2);
+      store.insertMemory(m3);
 
-      final found = await store.findMemoriesByIds([m3.id, m1.id]);
+      final found = store.findMemoriesByIds([m3.id, m1.id]);
       expect(found, hasLength(2));
       expect(found[0].content, 'third');
       expect(found[1].content, 'first');
     });
 
     test('upsertEntity and findEntityByName', () async {
-      await store.upsertEntity(id: 'e1', name: 'Dart', type: 'project');
-      final entity = await store.findEntityByName('Dart');
+      store.upsertEntity(id: 'e1', name: 'Dart', type: 'project');
+      final entity = store.findEntityByName('Dart');
       expect(entity, isNotNull);
       expect(entity!.id, 'e1');
       expect(entity.type, 'project');
     });
 
     test('findEntityByName returns null for unknown', () async {
-      final entity = await store.findEntityByName('Nonexistent');
+      final entity = store.findEntityByName('Nonexistent');
       expect(entity, isNull);
     });
 
     test('findEntitiesByNameMatch finds substring matches', () async {
-      await store.upsertEntity(id: 'e1', name: 'Dart', type: 'project');
-      await store.upsertEntity(id: 'e2', name: 'Flutter', type: 'project');
+      store.upsertEntity(id: 'e1', name: 'Dart', type: 'project');
+      store.upsertEntity(id: 'e2', name: 'Flutter', type: 'project');
 
-      final matches = await store.findEntitiesByNameMatch(
+      final matches = store.findEntitiesByNameMatch(
         'I use Dart for my projects',
       );
       expect(matches, hasLength(1));
@@ -1104,22 +1105,22 @@ void main() {
     });
 
     test('upsertRelationship and findRelationshipsForEntity', () async {
-      await store.upsertEntity(id: 'e1', name: 'Flutter', type: 'project');
-      await store.upsertEntity(id: 'e2', name: 'Dart', type: 'project');
-      await store.upsertRelationship(
+      store.upsertEntity(id: 'e1', name: 'Flutter', type: 'project');
+      store.upsertEntity(id: 'e2', name: 'Dart', type: 'project');
+      store.upsertRelationship(
         fromEntity: 'e1',
         toEntity: 'e2',
         relation: 'uses',
         confidence: 0.95,
       );
 
-      final rels = await store.findRelationshipsForEntity('e1');
+      final rels = store.findRelationshipsForEntity('e1');
       expect(rels, hasLength(1));
       expect(rels.first.relation, 'uses');
       expect(rels.first.confidence, 0.95);
 
       // Also found from the other direction.
-      final rels2 = await store.findRelationshipsForEntity('e2');
+      final rels2 = store.findRelationshipsForEntity('e2');
       expect(rels2, hasLength(1));
     });
 
@@ -1128,10 +1129,10 @@ void main() {
         content: 'Dart is great',
         entityIds: ['e1'],
       );
-      await store.insertMemory(mem);
-      await store.upsertEntity(id: 'e1', name: 'Dart', type: 'project');
+      store.insertMemory(mem);
+      store.upsertEntity(id: 'e1', name: 'Dart', type: 'project');
 
-      final found = await store.findMemoriesByEntityIds(['e1']);
+      final found = store.findMemoriesByEntityIds(['e1']);
       expect(found, hasLength(1));
       expect(found.first.content, 'Dart is great');
     });
@@ -1142,20 +1143,20 @@ void main() {
         entityIds: ['e1'],
         status: MemoryStatus.superseded,
       );
-      await store.insertMemory(mem);
+      store.insertMemory(mem);
 
-      final found = await store.findMemoriesByEntityIds(['e1']);
+      final found = store.findMemoriesByEntityIds(['e1']);
       expect(found, isEmpty);
     });
 
     test('updateAccessStats bumps count and timestamp', () async {
       final mem = StoredMemory(content: 'test');
-      await store.insertMemory(mem);
+      store.insertMemory(mem);
 
-      await store.updateAccessStats([mem.id]);
-      await store.updateAccessStats([mem.id]);
+      store.updateAccessStats([mem.id]);
+      store.updateAccessStats([mem.id]);
 
-      final found = await store.findMemoriesByIds([mem.id]);
+      final found = store.findMemoriesByIds([mem.id]);
       expect(found.first.accessCount, 2);
       expect(found.first.lastAccessed, isNotNull);
     });
@@ -1163,15 +1164,15 @@ void main() {
     test('supersede marks old as superseded', () async {
       final old = StoredMemory(content: 'old fact');
       final replacement = StoredMemory(content: 'new fact');
-      await store.insertMemory(old);
-      await store.insertMemory(replacement);
+      store.insertMemory(old);
+      store.insertMemory(replacement);
 
-      await store.supersede(old.id, replacement.id);
+      store.supersede(old.id, replacement.id);
 
-      final found = await store.findMemoriesByIds([old.id]);
+      final found = store.findMemoriesByIds([old.id]);
       expect(found.first.status, MemoryStatus.superseded);
       expect(found.first.supersededBy, replacement.id);
-      expect(await store.activeMemoryCount(), 1);
+      expect(store.activeMemoryCount(), 1);
     });
 
     test('applyImportanceDecay decays inactive memories', () async {
@@ -1184,16 +1185,16 @@ void main() {
         content: 'fresh fact',
         importance: 1.0,
       );
-      await store.insertMemory(old);
-      await store.insertMemory(recent);
+      store.insertMemory(old);
+      store.insertMemory(recent);
 
-      final affected = await store.applyImportanceDecay(
+      final affected = store.applyImportanceDecay(
         inactivePeriod: const Duration(days: 90),
         decayRate: 0.5,
       );
 
       expect(affected, 1); // Only old memory decayed.
-      final found = await store.listActiveMemories();
+      final found = store.listActiveMemories();
       final oldFound = found.firstWhere((m) => m.id == old.id);
       final recentFound = found.firstWhere((m) => m.id == recent.id);
       expect(oldFound.importance, closeTo(0.5, 0.01));
@@ -1202,12 +1203,12 @@ void main() {
 
     test('embedding round-trip via BLOB', () async {
       final mem = StoredMemory(content: 'test embedding');
-      await store.insertMemory(mem);
+      store.insertMemory(mem);
 
       final embedding = [0.1, 0.2, 0.3, 0.4, 0.5];
-      await store.updateMemoryEmbedding(mem.id, embedding);
+      store.updateMemoryEmbedding(mem.id, embedding);
 
-      final loaded = await store.loadMemoriesWithEmbeddings();
+      final loaded = store.loadMemoriesWithEmbeddings();
       expect(loaded, hasLength(1));
       expect(loaded.first.id, mem.id);
       for (var i = 0; i < embedding.length; i++) {
@@ -1216,11 +1217,11 @@ void main() {
     });
 
     test('listActiveMemories ordered by importance desc', () async {
-      await store.insertMemory(StoredMemory(content: 'low', importance: 0.2));
-      await store.insertMemory(StoredMemory(content: 'high', importance: 0.9));
-      await store.insertMemory(StoredMemory(content: 'mid', importance: 0.5));
+      store.insertMemory(StoredMemory(content: 'low', importance: 0.2));
+      store.insertMemory(StoredMemory(content: 'high', importance: 0.9));
+      store.insertMemory(StoredMemory(content: 'mid', importance: 0.5));
 
-      final list = await store.listActiveMemories();
+      final list = store.listActiveMemories();
       expect(list.map((m) => m.content).toList(), ['high', 'mid', 'low']);
     });
   });
@@ -1228,12 +1229,12 @@ void main() {
   // ── DurableMemory consolidation ────────────────────────────────────────
 
   group('DurableMemory consolidation', () {
-    late StanzaSqlite db;
+    late sqlite3.Database db;
     late DurableMemoryStore store;
     late DurableMemory component;
 
     setUp(() async {
-      db = StanzaSqlite.memory();
+      db = sqlite3.sqlite3.openInMemory();
       store = DurableMemoryStore(db);
       // BM25 scores in a tiny corpus are near zero (e.g. 0.000003), so
       // mergeThreshold must be 0.0 to trigger conflict resolution in tests.
@@ -1244,8 +1245,8 @@ void main() {
       await component.initialize();
     });
 
-    tearDown(() async {
-      await db.close();
+    tearDown(() {
+      db.dispose();
     });
 
     ComponentBudget _budget([int tokens = 10000]) {
@@ -1285,7 +1286,7 @@ void main() {
       expect(report.componentName, 'durable');
       expect(report.itemsCreated, 1);
       expect(report.episodesConsumed, 1);
-      expect(await store.activeMemoryCount(), 1);
+      expect(store.activeMemoryCount(), 1);
     });
 
     test('creates entities during extraction', () async {
@@ -1309,8 +1310,8 @@ void main() {
         _budget(),
       );
 
-      final dart = await store.findEntityByName('Dart');
-      final google = await store.findEntityByName('Google');
+      final dart = store.findEntityByName('Dart');
+      final google = store.findEntityByName('Google');
       expect(dart, isNotNull);
       expect(dart!.type, 'project');
       expect(google, isNotNull);
@@ -1335,9 +1336,9 @@ void main() {
         _budget(),
       );
 
-      final flutter = await store.findEntityByName('Flutter');
+      final flutter = store.findEntityByName('Flutter');
       expect(flutter, isNotNull);
-      final rels = await store.findRelationshipsForEntity(flutter!.id);
+      final rels = store.findRelationshipsForEntity(flutter!.id);
       expect(rels, hasLength(1));
       expect(rels.first.relation, 'uses');
     });
@@ -1358,7 +1359,7 @@ void main() {
         }),
         _budget(),
       );
-      expect(await store.activeMemoryCount(), 1);
+      expect(store.activeMemoryCount(), 1);
 
       // Second consolidation: update with refinement.
       await component.consolidate(
@@ -1378,8 +1379,8 @@ void main() {
       );
 
       // Should still be 1 memory (merged), with updated content.
-      expect(await store.activeMemoryCount(), 1);
-      final memories = await store.listActiveMemories();
+      expect(store.activeMemoryCount(), 1);
+      final memories = store.listActiveMemories();
       expect(memories.first.content, contains('type system'));
       expect(memories.first.importance, 0.8);
     });
@@ -1420,8 +1421,8 @@ void main() {
 
       expect(report.itemsCreated, 1); // New memory created.
       // One active (new), one superseded (old).
-      expect(await store.activeMemoryCount(), 1);
-      final active = await store.listActiveMemories();
+      expect(store.activeMemoryCount(), 1);
+      final active = store.listActiveMemories();
       expect(active.first.content, contains('spaces'));
     });
 
@@ -1461,7 +1462,7 @@ void main() {
 
       expect(report.itemsCreated, 0);
       expect(report.itemsMerged, 0);
-      expect(await store.activeMemoryCount(), 1);
+      expect(store.activeMemoryCount(), 1);
     });
 
     test('empty episodes returns report with only decay', () async {
@@ -1550,7 +1551,7 @@ void main() {
       );
 
       // Verify only one entity named 'Dart' exists.
-      final entities = await store.findEntitiesByNameMatch('Dart');
+      final entities = store.findEntitiesByNameMatch('Dart');
       expect(entities, hasLength(1));
     });
   });
@@ -1558,19 +1559,19 @@ void main() {
   // ── DurableMemory recall ───────────────────────────────────────────────
 
   group('DurableMemory recall', () {
-    late StanzaSqlite db;
+    late sqlite3.Database db;
     late DurableMemoryStore store;
     late DurableMemory component;
 
     setUp(() async {
-      db = StanzaSqlite.memory();
+      db = sqlite3.sqlite3.openInMemory();
       store = DurableMemoryStore(db);
       component = DurableMemory(store: store);
       await component.initialize();
     });
 
-    tearDown(() async {
-      await db.close();
+    tearDown(() {
+      db.dispose();
     });
 
     ComponentBudget _budget([int tokens = 10000]) {
@@ -1584,7 +1585,7 @@ void main() {
       double importance = 0.7,
       List<String> entityIds = const [],
     }) async {
-      await store.insertMemory(StoredMemory(
+      store.insertMemory(StoredMemory(
         content: content,
         importance: importance,
         entityIds: entityIds,
@@ -1652,9 +1653,9 @@ void main() {
 
     test('entity graph expansion finds related memories', () async {
       // Create entities and relationship.
-      await store.upsertEntity(id: 'e1', name: 'Flutter', type: 'project');
-      await store.upsertEntity(id: 'e2', name: 'Dart', type: 'project');
-      await store.upsertRelationship(
+      store.upsertEntity(id: 'e1', name: 'Flutter', type: 'project');
+      store.upsertEntity(id: 'e2', name: 'Dart', type: 'project');
+      store.upsertRelationship(
         fromEntity: 'e1',
         toEntity: 'e2',
         relation: 'uses',
@@ -1674,11 +1675,11 @@ void main() {
 
     test('recall updates access stats', () async {
       final mem = StoredMemory(content: 'Dart is wonderful');
-      await store.insertMemory(mem);
+      store.insertMemory(mem);
 
       await component.recall('Dart', _budget());
 
-      final found = await store.findMemoriesByIds([mem.id]);
+      final found = store.findMemoriesByIds([mem.id]);
       expect(found.first.accessCount, greaterThan(0));
     });
 
@@ -1696,25 +1697,26 @@ void main() {
     });
   });
 
-  // ── SqliteEpisodeStore ─────────────────────────────────────────────────
+  // ── CellarEpisodeStore ───────────────────────────────────────────────
 
-  group('SqliteEpisodeStore', () {
-    late StanzaSqlite db;
-    late SqliteEpisodeStore store;
+  group('CellarEpisodeStore', () {
+    late Cellar cellar;
+    late CellarEpisodeStore store;
 
-    setUp(() async {
-      db = StanzaSqlite.memory();
-      store = SqliteEpisodeStore(db);
-      await store.initialize();
+    setUp(() {
+      cellar = Cellar.memory(
+        collections: [SouvenirCellar.episodesCollection('')],
+      );
+      store = CellarEpisodeStore(cellar, 'episodes');
     });
 
-    tearDown(() async {
-      await db.close();
+    tearDown(() {
+      cellar.close();
     });
 
     test('insert and count', () async {
       await store.insert([_episode('a'), _episode('b')]);
-      expect(await store.count(), 2);
+      expect(store.count, 2);
     });
 
     test('fetchUnconsolidated returns all initially', () async {
@@ -1737,10 +1739,10 @@ void main() {
     test('unconsolidatedCount tracks correctly', () async {
       final episodes = [_episode('a'), _episode('b'), _episode('c')];
       await store.insert(episodes);
-      expect(await store.unconsolidatedCount(), 3);
+      expect(store.unconsolidatedCount, 3);
 
       await store.markConsolidated([episodes[0]]);
-      expect(await store.unconsolidatedCount(), 2);
+      expect(store.unconsolidatedCount, 2);
     });
 
     test('fetchUnconsolidated ordered by timestamp', () async {
@@ -1766,7 +1768,7 @@ void main() {
 
     test('empty insert is no-op', () async {
       await store.insert([]);
-      expect(await store.count(), 0);
+      expect(store.count, 0);
     });
 
     test('preserves episode fields round-trip', () async {
@@ -1791,13 +1793,13 @@ void main() {
   // ── Integration: DurableMemory in engine ───────────────────────────────
 
   group('Integration: DurableMemory in engine', () {
-    late StanzaSqlite db;
+    late sqlite3.Database db;
     late DurableMemoryStore memStore;
     late DurableMemory durableComponent;
     late Souvenir engine;
 
     setUp(() async {
-      db = StanzaSqlite.memory();
+      db = sqlite3.sqlite3.openInMemory();
       memStore = DurableMemoryStore(db);
       durableComponent = DurableMemory(store: memStore);
       engine = Souvenir(
@@ -1814,7 +1816,7 @@ void main() {
 
     tearDown(() async {
       await engine.close();
-      await db.close();
+      db.dispose();
     });
 
     test('end-to-end consolidate and recall', () async {
@@ -1874,7 +1876,7 @@ void main() {
       await multiEngine.initialize();
 
       // Seed durable memory directly.
-      await memStore.insertMemory(
+      memStore.insertMemory(
         StoredMemory(content: 'User prefers Dart', importance: 0.8),
       );
 
@@ -1887,11 +1889,13 @@ void main() {
       await multiEngine.close();
     });
 
-    test('SqliteEpisodeStore works with engine', () async {
-      final sqliteEpStore = SqliteEpisodeStore(db);
-      await sqliteEpStore.initialize();
+    test('CellarEpisodeStore works with engine', () async {
+      final cellar = Cellar.memory(
+        collections: [SouvenirCellar.episodesCollection('')],
+      );
+      final cellarEpStore = CellarEpisodeStore(cellar, 'episodes');
 
-      final sqlEngine = Souvenir(
+      final cellarEngine = Souvenir(
         components: [durableComponent],
         budget: Budget(
           totalTokens: 4000,
@@ -1899,18 +1903,18 @@ void main() {
           tokenizer: const ApproximateTokenizer(),
         ),
         mixer: const WeightedMixer(),
-        store: sqliteEpStore,
+        store: cellarEpStore,
       );
-      await sqlEngine.initialize();
+      await cellarEngine.initialize();
 
-      await sqlEngine.record(
+      await cellarEngine.record(
         _episode('User prefers functional programming'),
       );
-      await sqlEngine.flush();
-      expect(await sqliteEpStore.count(), 1);
-      expect(await sqliteEpStore.unconsolidatedCount(), 1);
+      await cellarEngine.flush();
+      expect(cellarEpStore.count, 1);
+      expect(cellarEpStore.unconsolidatedCount, 1);
 
-      await sqlEngine.consolidate(
+      await cellarEngine.consolidate(
         (sys, user) async => jsonEncode({
           'facts': [
             {
@@ -1923,8 +1927,9 @@ void main() {
         }),
       );
 
-      expect(await sqliteEpStore.unconsolidatedCount(), 0);
-      await sqlEngine.close();
+      expect(cellarEpStore.unconsolidatedCount, 0);
+      await cellarEngine.close();
+      cellar.close();
     });
   });
 
@@ -2024,7 +2029,7 @@ void main() {
 
     setUp(() async {
       store = InMemoryTaskMemoryStore();
-      await store.initialize();
+      store.initialize();
     });
 
     TaskItem _taskItem(
@@ -2175,8 +2180,8 @@ void main() {
       final item = _taskItem('test');
       await store.insert(item);
 
-      await store.updateAccessStats([item.id]);
-      await store.updateAccessStats([item.id]);
+      store.updateAccessStats([item.id]);
+      store.updateAccessStats([item.id]);
 
       final items = await store.allActiveItems();
       expect(items.first.accessCount, 2);
@@ -2887,7 +2892,7 @@ void main() {
 
     setUp(() async {
       store = InMemoryEnvironmentalMemoryStore();
-      await store.initialize();
+      store.initialize();
     });
 
     EnvironmentalItem _envItem(
@@ -3014,8 +3019,8 @@ void main() {
       final item = _envItem('test');
       await store.insert(item);
 
-      await store.updateAccessStats([item.id]);
-      await store.updateAccessStats([item.id]);
+      store.updateAccessStats([item.id]);
+      store.updateAccessStats([item.id]);
 
       final items = await store.allActiveItems();
       expect(items.first.accessCount, 2);
@@ -3591,6 +3596,479 @@ void main() {
       final result = await engine.recall('Linux operating system');
       expect(result.items, isNotEmpty);
       expect(result.items.first.content, contains('Linux'));
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  CELLAR STORE TESTS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── CellarTaskMemoryStore ──────────────────────────────────────────────
+
+  group('CellarTaskMemoryStore', () {
+    late Cellar cellar;
+    late CellarTaskMemoryStore store;
+
+    setUp(() {
+      cellar = Cellar.memory(
+        collections: [SouvenirCellar.taskItemsCollection('')],
+      );
+      store = CellarTaskMemoryStore(cellar, 'task_items');
+    });
+
+    tearDown(() {
+      cellar.close();
+    });
+
+    TaskItem _taskItem(
+      String content, {
+      TaskItemCategory category = TaskItemCategory.context,
+      String sessionId = 'ses_01',
+      double importance = 0.6,
+    }) {
+      return TaskItem(
+        content: content,
+        category: category,
+        sessionId: sessionId,
+        importance: importance,
+      );
+    }
+
+    test('insert and allActiveItems', () async {
+      await store.insert(_taskItem('goal one'));
+      await store.insert(_taskItem('goal two'));
+      final items = await store.allActiveItems();
+      expect(items, hasLength(2));
+    });
+
+    test('activeItemsForSession filters by session', () async {
+      await store.insert(_taskItem('a', sessionId: 'ses_01'));
+      await store.insert(_taskItem('b', sessionId: 'ses_02'));
+      await store.insert(_taskItem('c', sessionId: 'ses_01'));
+
+      final items = await store.activeItemsForSession('ses_01');
+      expect(items, hasLength(2));
+      expect(items.every((i) => i.sessionId == 'ses_01'), isTrue);
+    });
+
+    test('findSimilar uses FTS5 and filters by category + session', () async {
+      await store.insert(_taskItem(
+        'implement user authentication system',
+        category: TaskItemCategory.goal,
+      ));
+      await store.insert(_taskItem(
+        'completely unrelated cooking topic',
+        category: TaskItemCategory.goal,
+      ));
+
+      final similar = await store.findSimilar(
+        'user authentication',
+        TaskItemCategory.goal,
+        'ses_01',
+      );
+      expect(similar, isNotEmpty);
+      expect(similar.first.content, contains('authentication'));
+    });
+
+    test('findSimilar excludes different categories', () async {
+      await store.insert(_taskItem(
+        'implement authentication',
+        category: TaskItemCategory.goal,
+      ));
+
+      final similar = await store.findSimilar(
+        'authentication',
+        TaskItemCategory.result,
+        'ses_01',
+      );
+      expect(similar, isEmpty);
+    });
+
+    test('expireSession marks all session items as expired', () async {
+      await store.insert(_taskItem('a', sessionId: 'ses_01'));
+      await store.insert(_taskItem('b', sessionId: 'ses_01'));
+      await store.insert(_taskItem('c', sessionId: 'ses_02'));
+
+      final count = await store.expireSession('ses_01', DateTime.now().toUtc());
+      expect(count, 2);
+      expect(await store.activeItemCount('ses_01'), 0);
+      expect(await store.activeItemCount('ses_02'), 1);
+    });
+
+    test('expireItem expires single item', () async {
+      final item = _taskItem('target');
+      await store.insert(item);
+      await store.insert(_taskItem('other'));
+
+      await store.expireItem(item.id, DateTime.now().toUtc());
+      expect(store.activeCount, 1);
+    });
+
+    test('update modifies content and importance', () async {
+      final item = _taskItem('original', importance: 0.5);
+      await store.insert(item);
+
+      await store.update(item.id, content: 'updated', importance: 0.9);
+
+      final items = await store.allActiveItems();
+      expect(items.first.content, 'updated');
+      expect(items.first.importance, 0.9);
+    });
+
+    test('updateAccessStats bumps count and timestamp', () async {
+      final item = _taskItem('test');
+      await store.insert(item);
+
+      await store.updateAccessStats([item.id]);
+      await store.updateAccessStats([item.id]);
+
+      final items = await store.allActiveItems();
+      expect(items.first.accessCount, 2);
+      expect(items.first.lastAccessed, isNotNull);
+    });
+
+    test('preserves all fields round-trip', () async {
+      final item = TaskItem(
+        content: 'implement auth',
+        category: TaskItemCategory.decision,
+        importance: 0.85,
+        sessionId: 'ses_42',
+        sourceEpisodeIds: ['ep1', 'ep2'],
+      );
+      await store.insert(item);
+
+      final items = await store.activeItemsForSession('ses_42');
+      expect(items, hasLength(1));
+      expect(items.first.id, item.id);
+      expect(items.first.content, 'implement auth');
+      expect(items.first.category, TaskItemCategory.decision);
+      expect(items.first.importance, 0.85);
+      expect(items.first.sessionId, 'ses_42');
+      expect(items.first.sourceEpisodeIds, ['ep1', 'ep2']);
+    });
+  });
+
+  // ── CellarEnvironmentalMemoryStore ─────────────────────────────────────
+
+  group('CellarEnvironmentalMemoryStore', () {
+    late Cellar cellar;
+    late CellarEnvironmentalMemoryStore store;
+
+    setUp(() {
+      cellar = Cellar.memory(
+        collections: [SouvenirCellar.environmentalItemsCollection('')],
+      );
+      store = CellarEnvironmentalMemoryStore(cellar, 'environmental_items');
+    });
+
+    tearDown(() {
+      cellar.close();
+    });
+
+    EnvironmentalItem _envItem(
+      String content, {
+      EnvironmentalCategory category = EnvironmentalCategory.environment,
+      double importance = 0.6,
+    }) {
+      return EnvironmentalItem(
+        content: content,
+        category: category,
+        importance: importance,
+      );
+    }
+
+    test('insert and allActiveItems', () async {
+      await store.insert(_envItem('obs one'));
+      await store.insert(_envItem('obs two'));
+      final items = await store.allActiveItems();
+      expect(items, hasLength(2));
+    });
+
+    test('allActiveItems excludes decayed', () async {
+      final item = _envItem('will decay');
+      await store.insert(item);
+      await store.insert(_envItem('stays'));
+      await store.markDecayed(item.id);
+
+      final items = await store.allActiveItems();
+      expect(items, hasLength(1));
+      expect(items.first.content, 'stays');
+    });
+
+    test('findSimilar uses FTS5 and filters by category', () async {
+      await store.insert(_envItem(
+        'file system read write access available',
+        category: EnvironmentalCategory.capability,
+      ));
+      await store.insert(_envItem(
+        'running on Linux operating system',
+        category: EnvironmentalCategory.environment,
+      ));
+
+      final similar = await store.findSimilar(
+        'file system access',
+        EnvironmentalCategory.capability,
+      );
+      expect(similar, isNotEmpty);
+      expect(similar.first.content, contains('file system'));
+    });
+
+    test('findSimilar excludes different categories', () async {
+      await store.insert(_envItem(
+        'API rate limit observed',
+        category: EnvironmentalCategory.constraint,
+      ));
+
+      final similar = await store.findSimilar(
+        'API rate limit',
+        EnvironmentalCategory.capability,
+      );
+      expect(similar, isEmpty);
+    });
+
+    test('activeItemCount tracks correctly', () async {
+      await store.insert(_envItem('a'));
+      await store.insert(_envItem('b'));
+      expect(await store.activeItemCount(), 2);
+
+      final items = await store.allActiveItems();
+      await store.markDecayed(items.first.id);
+      expect(await store.activeItemCount(), 1);
+    });
+
+    test('update modifies content and importance', () async {
+      final item = _envItem('original', importance: 0.5);
+      await store.insert(item);
+
+      await store.update(item.id, content: 'updated', importance: 0.9);
+
+      final items = await store.allActiveItems();
+      expect(items.first.content, 'updated');
+      expect(items.first.importance, 0.9);
+    });
+
+    test('updateAccessStats bumps count and timestamp', () async {
+      final item = _envItem('test');
+      await store.insert(item);
+
+      await store.updateAccessStats([item.id]);
+      await store.updateAccessStats([item.id]);
+
+      final items = await store.allActiveItems();
+      expect(items.first.accessCount, 2);
+      expect(items.first.lastAccessed, isNotNull);
+    });
+
+    test('applyImportanceDecay decays inactive items', () async {
+      // Insert old item, then backdated its updated_at via raw SQL.
+      final old = _envItem('stale observation', importance: 0.5);
+      await store.insert(old);
+      final cutoffTime =
+          DateTime.now().subtract(const Duration(days: 20)).toUtc();
+      cellar.rawQuery(
+        'UPDATE environmental_items SET updated_at = ? WHERE id = ?',
+        [cutoffTime.toIso8601String(), old.id],
+      );
+
+      await store.insert(_envItem('fresh observation', importance: 0.8));
+
+      final floored = await store.applyImportanceDecay(
+        inactivePeriod: const Duration(days: 14),
+        decayRate: 0.5,
+        floorThreshold: 0.1,
+      );
+
+      // 0.5 * 0.5 = 0.25, above floor → not floored.
+      expect(floored, 0);
+      final items = await store.allActiveItems();
+      final oldItem =
+          items.firstWhere((i) => i.content == 'stale observation');
+      expect(oldItem.importance, closeTo(0.25, 0.01));
+    });
+
+    test('applyImportanceDecay marks items below floor as decayed', () async {
+      final old = _envItem('very stale', importance: 0.08);
+      await store.insert(old);
+      final cutoffTime =
+          DateTime.now().subtract(const Duration(days: 20)).toUtc();
+      cellar.rawQuery(
+        'UPDATE environmental_items SET updated_at = ? WHERE id = ?',
+        [cutoffTime.toIso8601String(), old.id],
+      );
+
+      final floored = await store.applyImportanceDecay(
+        inactivePeriod: const Duration(days: 14),
+        decayRate: 0.95,
+        floorThreshold: 0.1,
+      );
+
+      // 0.08 * 0.95 = 0.076, below floor 0.1 → decayed.
+      expect(floored, 1);
+      expect(store.activeCount, 0);
+    });
+
+    test('preserves all fields round-trip', () async {
+      final item = EnvironmentalItem(
+        content: 'file system access available',
+        category: EnvironmentalCategory.capability,
+        importance: 0.85,
+        sourceEpisodeIds: ['ep1', 'ep2'],
+      );
+      await store.insert(item);
+
+      final items = await store.allActiveItems();
+      expect(items, hasLength(1));
+      expect(items.first.id, item.id);
+      expect(items.first.content, 'file system access available');
+      expect(items.first.category, EnvironmentalCategory.capability);
+      expect(items.first.importance, 0.85);
+      expect(items.first.sourceEpisodeIds, ['ep1', 'ep2']);
+    });
+  });
+
+  // ── SouvenirCellar ─────────────────────────────────────────────────────
+
+  group('SouvenirCellar', () {
+    test('creates stores without agent prefix', () {
+      final cellar = Cellar.memory();
+      final sc = SouvenirCellar(cellar: cellar);
+
+      expect(sc.prefix, '');
+      expect(sc.collectionName('episodes'), 'episodes');
+
+      final epStore = sc.createEpisodeStore();
+      expect(epStore, isA<CellarEpisodeStore>());
+
+      final taskStore = sc.createTaskStore();
+      expect(taskStore, isA<CellarTaskMemoryStore>());
+
+      final envStore = sc.createEnvironmentalStore();
+      expect(envStore, isA<CellarEnvironmentalMemoryStore>());
+
+      final durableStore = sc.createDurableStore();
+      expect(durableStore, isA<DurableMemoryStore>());
+
+      cellar.close();
+    });
+
+    test('creates stores with agent prefix', () {
+      final cellar = Cellar.memory();
+      final sc = SouvenirCellar(cellar: cellar, agentId: 'researcher');
+
+      expect(sc.prefix, 'researcher_');
+      expect(sc.collectionName('episodes'), 'researcher_episodes');
+
+      cellar.close();
+    });
+
+    test('multi-agent isolation via prefix', () {
+      final cellar = Cellar.memory();
+      final sc1 = SouvenirCellar(cellar: cellar, agentId: 'agent1');
+      final sc2 = SouvenirCellar(cellar: cellar, agentId: 'agent2');
+
+      expect(sc1.collectionName('episodes'), 'agent1_episodes');
+      expect(sc2.collectionName('episodes'), 'agent2_episodes');
+
+      // Each creates independent episode stores.
+      final epStore1 = sc1.createEpisodeStore();
+      final epStore2 = sc2.createEpisodeStore();
+
+      // Insert into one, shouldn't appear in the other.
+      epStore1.insert([_episode('agent1 only')]);
+      expect(epStore1.count, 1);
+      expect(epStore2.count, 0);
+
+      cellar.close();
+    });
+
+    test('episode store works through factory', () async {
+      final cellar = Cellar.memory();
+      final sc = SouvenirCellar(cellar: cellar);
+      final store = sc.createEpisodeStore();
+
+      await store.insert([_episode('a'), _episode('b')]);
+      expect(store.count, 2);
+
+      final unconsolidated = await store.fetchUnconsolidated();
+      expect(unconsolidated, hasLength(2));
+
+      await store.markConsolidated([unconsolidated.first]);
+      expect(store.unconsolidatedCount, 1);
+
+      cellar.close();
+    });
+
+    test('task store works through factory', () async {
+      final cellar = Cellar.memory();
+      final sc = SouvenirCellar(cellar: cellar);
+      final store = sc.createTaskStore();
+
+      final item = TaskItem(
+        content: 'implement auth',
+        category: TaskItemCategory.goal,
+        sessionId: 'ses_01',
+      );
+      await store.insert(item);
+      expect(store.activeCount, 1);
+
+      final items = await store.activeItemsForSession('ses_01');
+      expect(items.first.content, 'implement auth');
+
+      cellar.close();
+    });
+
+    test('environmental store works through factory', () async {
+      final cellar = Cellar.memory();
+      final sc = SouvenirCellar(cellar: cellar);
+      final store = sc.createEnvironmentalStore();
+
+      final item = EnvironmentalItem(
+        content: 'file system access',
+        category: EnvironmentalCategory.capability,
+      );
+      await store.insert(item);
+      expect(store.activeCount, 1);
+
+      final items = await store.allActiveItems();
+      expect(items.first.content, 'file system access');
+
+      cellar.close();
+    });
+
+    test('durable store works through factory', () {
+      final cellar = Cellar.memory();
+      final sc = SouvenirCellar(cellar: cellar);
+      final store = sc.createDurableStore();
+
+      store.initialize();
+      store.insertMemory(StoredMemory(content: 'test fact'));
+      expect(store.activeMemoryCount(), 1);
+
+      cellar.close();
+    });
+
+    test('requireEncryption throws on unencrypted database', () {
+      final cellar = Cellar.memory();
+      expect(
+        () => SouvenirCellar(
+          cellar: cellar,
+          requireEncryption: true,
+        ),
+        throwsStateError,
+      );
+      cellar.close();
+    });
+
+    test('requireEncryption false does not throw', () {
+      final cellar = Cellar.memory();
+      expect(
+        () => SouvenirCellar(
+          cellar: cellar,
+          requireEncryption: false,
+        ),
+        returnsNormally,
+      );
+      cellar.close();
     });
   });
 }
