@@ -17,6 +17,12 @@ export 'src/durable/durable_memory_config.dart';
 export 'src/durable/durable_memory_store.dart';
 export 'src/durable/stored_memory.dart';
 
+// Task memory component.
+export 'src/task/task_item.dart';
+export 'src/task/task_memory.dart';
+export 'src/task/task_memory_config.dart';
+export 'src/task/task_memory_store.dart';
+
 // SQLite episode store.
 export 'src/sqlite_episode_store.dart';
 

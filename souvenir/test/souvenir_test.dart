@@ -1927,4 +1927,877 @@ void main() {
       await sqlEngine.close();
     });
   });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  PHASE 3: TaskMemory
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── TaskItem ─────────────────────────────────────────────────────────────
+
+  group('TaskItem', () {
+    test('generates ULID id when not provided', () {
+      final item = TaskItem(
+        content: 'test goal',
+        category: TaskItemCategory.goal,
+        sessionId: 'ses_01',
+      );
+      expect(item.id, isNotEmpty);
+      expect(item.id.length, 26);
+    });
+
+    test('defaults to active status', () {
+      final item = TaskItem(
+        content: 'test',
+        category: TaskItemCategory.context,
+        sessionId: 'ses_01',
+      );
+      expect(item.status, TaskItemStatus.active);
+    });
+
+    test('defaults importance to 0.6', () {
+      final item = TaskItem(
+        content: 'test',
+        category: TaskItemCategory.result,
+        sessionId: 'ses_01',
+      );
+      expect(item.importance, 0.6);
+    });
+
+    test('isActive true when status is active and no invalidAt', () {
+      final item = TaskItem(
+        content: 'test',
+        category: TaskItemCategory.goal,
+        sessionId: 'ses_01',
+      );
+      expect(item.isActive, isTrue);
+    });
+
+    test('isActive false when status is expired', () {
+      final item = TaskItem(
+        content: 'test',
+        category: TaskItemCategory.goal,
+        sessionId: 'ses_01',
+        status: TaskItemStatus.expired,
+      );
+      expect(item.isActive, isFalse);
+    });
+
+    test('isActive false when invalidAt is in the past', () {
+      final item = TaskItem(
+        content: 'test',
+        category: TaskItemCategory.goal,
+        sessionId: 'ses_01',
+        invalidAt: DateTime.now().subtract(const Duration(hours: 1)),
+      );
+      expect(item.isActive, isFalse);
+    });
+
+    test('accepts all explicit fields', () {
+      final now = DateTime.now().toUtc();
+      final item = TaskItem(
+        id: 'custom-id',
+        content: 'implement auth',
+        category: TaskItemCategory.decision,
+        importance: 0.85,
+        sessionId: 'ses_42',
+        sourceEpisodeIds: ['ep1', 'ep2'],
+        createdAt: now,
+        updatedAt: now,
+        accessCount: 3,
+        status: TaskItemStatus.superseded,
+        invalidAt: now.add(const Duration(hours: 4)),
+      );
+      expect(item.id, 'custom-id');
+      expect(item.category, TaskItemCategory.decision);
+      expect(item.importance, 0.85);
+      expect(item.sessionId, 'ses_42');
+      expect(item.sourceEpisodeIds, ['ep1', 'ep2']);
+      expect(item.accessCount, 3);
+      expect(item.status, TaskItemStatus.superseded);
+    });
+  });
+
+  // ── InMemoryTaskMemoryStore ──────────────────────────────────────────────
+
+  group('InMemoryTaskMemoryStore', () {
+    late InMemoryTaskMemoryStore store;
+
+    setUp(() async {
+      store = InMemoryTaskMemoryStore();
+      await store.initialize();
+    });
+
+    TaskItem _taskItem(
+      String content, {
+      TaskItemCategory category = TaskItemCategory.context,
+      String sessionId = 'ses_01',
+      double importance = 0.6,
+    }) {
+      return TaskItem(
+        content: content,
+        category: category,
+        sessionId: sessionId,
+        importance: importance,
+      );
+    }
+
+    test('insert adds items', () async {
+      await store.insert(_taskItem('goal one'));
+      await store.insert(_taskItem('goal two'));
+      expect(store.length, 2);
+    });
+
+    test('activeItemsForSession filters by session and active status', () async {
+      await store.insert(_taskItem('a', sessionId: 'ses_01'));
+      await store.insert(_taskItem('b', sessionId: 'ses_02'));
+      await store.insert(_taskItem('c', sessionId: 'ses_01'));
+
+      final items = await store.activeItemsForSession('ses_01');
+      expect(items, hasLength(2));
+      expect(items.every((i) => i.sessionId == 'ses_01'), isTrue);
+    });
+
+    test('activeItemsForSession excludes expired items', () async {
+      await store.insert(_taskItem('a'));
+      await store.insert(_taskItem('b'));
+      await store.expireItem(
+        (await store.allActiveItems()).first.id,
+        DateTime.now().toUtc(),
+      );
+
+      final items = await store.activeItemsForSession('ses_01');
+      expect(items, hasLength(1));
+    });
+
+    test('allActiveItems returns active across sessions', () async {
+      await store.insert(_taskItem('a', sessionId: 'ses_01'));
+      await store.insert(_taskItem('b', sessionId: 'ses_02'));
+
+      final items = await store.allActiveItems();
+      expect(items, hasLength(2));
+    });
+
+    test('findSimilar returns items with high token overlap in same category', () async {
+      await store.insert(_taskItem(
+        'implement user authentication system',
+        category: TaskItemCategory.goal,
+      ));
+      await store.insert(_taskItem(
+        'completely unrelated topic about cooking',
+        category: TaskItemCategory.goal,
+      ));
+
+      final similar = await store.findSimilar(
+        'user authentication feature',
+        TaskItemCategory.goal,
+        'ses_01',
+      );
+      expect(similar, isNotEmpty);
+      expect(similar.first.content, contains('authentication'));
+    });
+
+    test('findSimilar excludes items in different categories', () async {
+      await store.insert(_taskItem(
+        'implement user authentication',
+        category: TaskItemCategory.goal,
+      ));
+
+      final similar = await store.findSimilar(
+        'user authentication',
+        TaskItemCategory.result, // Different category
+        'ses_01',
+      );
+      expect(similar, isEmpty);
+    });
+
+    test('findSimilar excludes items from different sessions', () async {
+      await store.insert(_taskItem(
+        'implement user authentication',
+        category: TaskItemCategory.goal,
+        sessionId: 'ses_02',
+      ));
+
+      final similar = await store.findSimilar(
+        'user authentication',
+        TaskItemCategory.goal,
+        'ses_01', // Different session
+      );
+      expect(similar, isEmpty);
+    });
+
+    test('findSimilar returns empty for no overlap', () async {
+      await store.insert(_taskItem(
+        'implement authentication',
+        category: TaskItemCategory.goal,
+      ));
+
+      final similar = await store.findSimilar(
+        'quantum entanglement physics',
+        TaskItemCategory.goal,
+        'ses_01',
+      );
+      expect(similar, isEmpty);
+    });
+
+    test('expireSession marks all session items as expired', () async {
+      await store.insert(_taskItem('a', sessionId: 'ses_01'));
+      await store.insert(_taskItem('b', sessionId: 'ses_01'));
+      await store.insert(_taskItem('c', sessionId: 'ses_02'));
+
+      final count = await store.expireSession('ses_01', DateTime.now().toUtc());
+      expect(count, 2);
+      expect(await store.activeItemCount('ses_01'), 0);
+      expect(await store.activeItemCount('ses_02'), 1);
+    });
+
+    test('expireItem expires single item', () async {
+      final item = _taskItem('target');
+      await store.insert(item);
+      await store.insert(_taskItem('other'));
+
+      await store.expireItem(item.id, DateTime.now().toUtc());
+      expect(store.activeCount, 1);
+    });
+
+    test('activeItemCount tracks correctly', () async {
+      await store.insert(_taskItem('a'));
+      await store.insert(_taskItem('b'));
+      expect(await store.activeItemCount('ses_01'), 2);
+
+      await store.expireItem(
+        (await store.allActiveItems()).first.id,
+        DateTime.now().toUtc(),
+      );
+      expect(await store.activeItemCount('ses_01'), 1);
+    });
+
+    test('updateAccessStats bumps count and timestamp', () async {
+      final item = _taskItem('test');
+      await store.insert(item);
+
+      await store.updateAccessStats([item.id]);
+      await store.updateAccessStats([item.id]);
+
+      final items = await store.allActiveItems();
+      expect(items.first.accessCount, 2);
+      expect(items.first.lastAccessed, isNotNull);
+    });
+
+    test('update replaces content and boosts importance', () async {
+      final item = _taskItem('original', importance: 0.5);
+      await store.insert(item);
+
+      await store.update(
+        item.id,
+        content: 'updated content',
+        importance: 0.9,
+      );
+
+      final items = await store.allActiveItems();
+      expect(items.first.content, 'updated content');
+      expect(items.first.importance, 0.9);
+    });
+  });
+
+  // ── TaskMemoryConfig ─────────────────────────────────────────────────────
+
+  group('TaskMemoryConfig', () {
+    test('defaults are sensible', () {
+      const config = TaskMemoryConfig();
+      expect(config.maxItemsPerSession, 50);
+      expect(config.defaultImportance, 0.6);
+      expect(config.mergeThreshold, 0.4);
+      expect(config.recencyDecayLambda, 0.1);
+      expect(config.recallTopK, 10);
+    });
+
+    test('custom values override defaults', () {
+      const config = TaskMemoryConfig(
+        maxItemsPerSession: 20,
+        defaultImportance: 0.8,
+        recallTopK: 5,
+      );
+      expect(config.maxItemsPerSession, 20);
+      expect(config.defaultImportance, 0.8);
+      expect(config.recallTopK, 5);
+    });
+
+    test('category weights cover all categories', () {
+      const config = TaskMemoryConfig();
+      for (final cat in TaskItemCategory.values) {
+        expect(config.categoryWeights[cat], isNotNull,
+            reason: 'Missing weight for $cat');
+      }
+      expect(config.categoryWeights[TaskItemCategory.goal],
+          greaterThan(config.categoryWeights[TaskItemCategory.context]!));
+    });
+  });
+
+  // ── TaskMemory consolidation ─────────────────────────────────────────────
+
+  group('TaskMemory consolidation', () {
+    late InMemoryTaskMemoryStore store;
+    late TaskMemory component;
+
+    setUp(() async {
+      store = InMemoryTaskMemoryStore();
+      component = TaskMemory(store: store);
+      await component.initialize();
+    });
+
+    ComponentBudget _budget([int tokens = 10000]) {
+      return ComponentBudget(
+        allocatedTokens: tokens,
+        tokenizer: const ApproximateTokenizer(),
+      );
+    }
+
+    Future<String> _stubTaskLlm(Map<String, dynamic> extraction) {
+      return Future.value(jsonEncode(extraction));
+    }
+
+    test('extracts items and creates task items', () async {
+      final episodes = [
+        _episode('User asked to implement authentication'),
+      ];
+
+      final report = await component.consolidate(
+        episodes,
+        (sys, user) => _stubTaskLlm({
+          'items': [
+            {
+              'content': 'User wants to implement authentication',
+              'category': 'goal',
+              'importance': 0.9,
+              'action': 'new',
+            },
+            {
+              'content': 'Using JWT tokens for auth',
+              'category': 'decision',
+              'importance': 0.7,
+              'action': 'new',
+            },
+          ],
+        }),
+        _budget(),
+      );
+
+      expect(report.componentName, 'task');
+      expect(report.itemsCreated, 2);
+      expect(report.episodesConsumed, 1);
+      expect(store.activeCount, 2);
+    });
+
+    test('empty episodes returns empty report', () async {
+      final report = await component.consolidate([], _noopLlm, _budget());
+      expect(report.itemsCreated, 0);
+      expect(report.episodesConsumed, 0);
+    });
+
+    test('malformed LLM response returns graceful report', () async {
+      final report = await component.consolidate(
+        [_episode('some episode')],
+        (sys, user) async => 'not valid json!!!',
+        _budget(),
+      );
+
+      expect(report.itemsCreated, 0);
+      expect(report.itemsMerged, 0);
+    });
+
+    test('session boundary: new sessionId expires previous session items', () async {
+      // First consolidation in session 1.
+      await component.consolidate(
+        [_episode('doing task A', sessionId: 'ses_01')],
+        (sys, user) => _stubTaskLlm({
+          'items': [
+            {
+              'content': 'Working on task A',
+              'category': 'goal',
+              'importance': 0.8,
+              'action': 'new',
+            },
+          ],
+        }),
+        _budget(),
+      );
+      expect(store.activeCount, 1);
+
+      // Second consolidation in session 2 — should expire session 1 items.
+      final report = await component.consolidate(
+        [_episode('doing task B', sessionId: 'ses_02')],
+        (sys, user) => _stubTaskLlm({
+          'items': [
+            {
+              'content': 'Working on task B',
+              'category': 'goal',
+              'importance': 0.8,
+              'action': 'new',
+            },
+          ],
+        }),
+        _budget(),
+      );
+
+      expect(report.itemsDecayed, 1); // Session 1 item expired.
+      expect(report.itemsCreated, 1);
+      // Only session 2 item is active.
+      expect(store.activeCount, 1);
+      final active = await store.activeItemsForSession('ses_02');
+      expect(active.first.content, 'Working on task B');
+    });
+
+    test('first consolidation sets currentSessionId', () async {
+      expect(component.currentSessionId, isNull);
+
+      await component.consolidate(
+        [_episode('test', sessionId: 'ses_42')],
+        (sys, user) => _stubTaskLlm({'items': []}),
+        _budget(),
+      );
+
+      expect(component.currentSessionId, 'ses_42');
+    });
+
+    test('merge action updates existing item', () async {
+      // Create initial item.
+      await component.consolidate(
+        [_episode('implement auth')],
+        (sys, user) => _stubTaskLlm({
+          'items': [
+            {
+              'content': 'Implementing user authentication',
+              'category': 'goal',
+              'importance': 0.7,
+              'action': 'new',
+            },
+          ],
+        }),
+        _budget(),
+      );
+
+      // Merge with refined goal.
+      final report = await component.consolidate(
+        [_episode('auth with JWT')],
+        (sys, user) => _stubTaskLlm({
+          'items': [
+            {
+              'content': 'Implementing user authentication with JWT',
+              'category': 'goal',
+              'importance': 0.85,
+              'action': 'merge',
+            },
+          ],
+        }),
+        _budget(),
+      );
+
+      expect(report.itemsMerged, 1);
+      expect(report.itemsCreated, 0);
+      expect(store.activeCount, 1);
+      final items = await store.activeItemsForSession('ses_01');
+      expect(items.first.content, contains('JWT'));
+      expect(items.first.importance, 0.85);
+    });
+
+    test('merge action falls through to create when no similar item found', () async {
+      await component.consolidate(
+        [_episode('some context')],
+        (sys, user) => _stubTaskLlm({
+          'items': [
+            {
+              'content': 'quantum computing research',
+              'category': 'goal',
+              'importance': 0.8,
+              'action': 'merge',
+            },
+          ],
+        }),
+        _budget(),
+      );
+
+      // No prior items → merge can't find a match → creates new.
+      expect(store.activeCount, 1);
+    });
+
+    test('maxItemsPerSession enforcement expires lowest importance', () async {
+      final limitedComponent = TaskMemory(
+        store: store,
+        config: const TaskMemoryConfig(maxItemsPerSession: 2),
+      );
+      await limitedComponent.initialize();
+
+      // Fill to capacity.
+      await limitedComponent.consolidate(
+        [_episode('first')],
+        (sys, user) => _stubTaskLlm({
+          'items': [
+            {'content': 'low priority item', 'category': 'context', 'importance': 0.3, 'action': 'new'},
+            {'content': 'high priority goal', 'category': 'goal', 'importance': 0.9, 'action': 'new'},
+          ],
+        }),
+        _budget(),
+      );
+      expect(store.activeCount, 2);
+
+      // Third item should evict lowest importance.
+      final report = await limitedComponent.consolidate(
+        [_episode('third')],
+        (sys, user) => _stubTaskLlm({
+          'items': [
+            {'content': 'medium priority decision', 'category': 'decision', 'importance': 0.7, 'action': 'new'},
+          ],
+        }),
+        _budget(),
+      );
+
+      expect(report.itemsDecayed, 1);
+      expect(store.activeCount, 2);
+      // Low priority item should be expired, high and medium remain.
+      final active = await store.activeItemsForSession('ses_01');
+      final importances = active.map((i) => i.importance).toList();
+      expect(importances, everyElement(greaterThanOrEqualTo(0.7)));
+    });
+
+    test('category assignment from LLM', () async {
+      await component.consolidate(
+        [_episode('test')],
+        (sys, user) => _stubTaskLlm({
+          'items': [
+            {'content': 'item 1', 'category': 'goal', 'importance': 0.8, 'action': 'new'},
+            {'content': 'item 2', 'category': 'decision', 'importance': 0.7, 'action': 'new'},
+            {'content': 'item 3', 'category': 'result', 'importance': 0.5, 'action': 'new'},
+            {'content': 'item 4', 'category': 'context', 'importance': 0.4, 'action': 'new'},
+          ],
+        }),
+        _budget(),
+      );
+
+      final items = await store.activeItemsForSession('ses_01');
+      final categories = items.map((i) => i.category).toSet();
+      expect(categories, containsAll([
+        TaskItemCategory.goal,
+        TaskItemCategory.decision,
+        TaskItemCategory.result,
+        TaskItemCategory.context,
+      ]));
+    });
+
+    test('default category is context when LLM omits it', () async {
+      await component.consolidate(
+        [_episode('test')],
+        (sys, user) => _stubTaskLlm({
+          'items': [
+            {'content': 'no category specified', 'importance': 0.5, 'action': 'new'},
+          ],
+        }),
+        _budget(),
+      );
+
+      final items = await store.activeItemsForSession('ses_01');
+      expect(items.first.category, TaskItemCategory.context);
+    });
+
+    test('extraction prompt mentions current task focus', () async {
+      String? capturedSystem;
+      await component.consolidate(
+        [_episode('test')],
+        (sys, user) async {
+          capturedSystem = sys;
+          return jsonEncode({'items': []});
+        },
+        _budget(),
+      );
+
+      expect(capturedSystem, contains('RIGHT NOW'));
+      expect(capturedSystem, contains('goal'));
+      expect(capturedSystem, contains('decision'));
+      expect(capturedSystem, contains('result'));
+      expect(capturedSystem, contains('context'));
+    });
+  });
+
+  // ── TaskMemory recall ────────────────────────────────────────────────────
+
+  group('TaskMemory recall', () {
+    late InMemoryTaskMemoryStore store;
+    late TaskMemory component;
+
+    setUp(() async {
+      store = InMemoryTaskMemoryStore();
+      component = TaskMemory(store: store);
+      await component.initialize();
+    });
+
+    ComponentBudget _budget([int tokens = 10000]) {
+      return ComponentBudget(
+        allocatedTokens: tokens,
+        tokenizer: const ApproximateTokenizer(),
+      );
+    }
+
+    Future<void> _seedTaskItems(TaskMemory comp, List<Map<String, dynamic>> items) async {
+      await comp.consolidate(
+        [_episode('seed')],
+        (sys, user) async => jsonEncode({'items': items}),
+        _budget(),
+      );
+    }
+
+    test('returns matching items via keyword overlap', () async {
+      await _seedTaskItems(component, [
+        {'content': 'Implementing Dart authentication system', 'category': 'goal', 'importance': 0.8, 'action': 'new'},
+        {'content': 'Python script for data processing', 'category': 'context', 'importance': 0.5, 'action': 'new'},
+      ]);
+
+      final results = await component.recall('Dart authentication', _budget());
+      expect(results, isNotEmpty);
+      expect(results.first.content, contains('authentication'));
+      expect(results.first.componentName, 'task');
+      expect(results.first.score, greaterThan(0));
+    });
+
+    test('returns empty list when no current session', () async {
+      // Don't consolidate anything — no session set.
+      final results = await component.recall('anything', _budget());
+      expect(results, isEmpty);
+    });
+
+    test('returns items even for loosely related queries (floor score)', () async {
+      await _seedTaskItems(component, [
+        {'content': 'Building the authentication module', 'category': 'goal', 'importance': 0.9, 'action': 'new'},
+      ]);
+
+      // Query with zero keyword overlap — floor score should still surface the item.
+      final results = await component.recall('xyz completely different', _budget());
+      expect(results, isNotEmpty);
+      expect(results.first.score, greaterThan(0));
+    });
+
+    test('labels items with component name', () async {
+      await _seedTaskItems(component, [
+        {'content': 'test task item', 'category': 'context', 'importance': 0.5, 'action': 'new'},
+      ]);
+
+      final results = await component.recall('test task', _budget());
+      for (final r in results) {
+        expect(r.componentName, 'task');
+      }
+    });
+
+    test('includes metadata with id, category, importance', () async {
+      await _seedTaskItems(component, [
+        {'content': 'goal item here', 'category': 'goal', 'importance': 0.9, 'action': 'new'},
+      ]);
+
+      final results = await component.recall('goal item', _budget());
+      expect(results, isNotEmpty);
+      expect(results.first.metadata, isNotNull);
+      expect(results.first.metadata!['category'], 'goal');
+      expect(results.first.metadata!['importance'], 0.9);
+      expect(results.first.metadata!['id'], isNotNull);
+    });
+
+    test('category weight: goals rank higher than context (same keywords)', () async {
+      await _seedTaskItems(component, [
+        {'content': 'implement user authentication feature', 'category': 'context', 'importance': 0.8, 'action': 'new'},
+        {'content': 'implement user authentication feature', 'category': 'goal', 'importance': 0.8, 'action': 'new'},
+      ]);
+
+      final results = await component.recall('authentication feature', _budget());
+      expect(results.length, greaterThanOrEqualTo(2));
+      // Goal should rank higher due to category weight.
+      expect(results.first.metadata!['category'], 'goal');
+    });
+
+    test('budget-aware cutoff stops at budget limit', () async {
+      await _seedTaskItems(component, [
+        for (var i = 0; i < 10; i++)
+          {'content': 'task item number $i with some extra words', 'category': 'context', 'importance': 0.5, 'action': 'new'},
+      ]);
+
+      // Tiny budget: ~2 items.
+      final results = await component.recall('task item', _budget(20));
+      expect(results.length, lessThanOrEqualTo(3));
+    });
+
+    test('updates access stats after recall', () async {
+      await _seedTaskItems(component, [
+        {'content': 'recall target item here', 'category': 'goal', 'importance': 0.8, 'action': 'new'},
+      ]);
+
+      await component.recall('recall target', _budget());
+
+      final items = await store.activeItemsForSession('ses_01');
+      expect(items.first.accessCount, greaterThan(0));
+      expect(items.first.lastAccessed, isNotNull);
+    });
+
+    test('custom component name used in recall labels', () async {
+      final customComponent = TaskMemory(
+        name: 'working-memory',
+        store: store,
+      );
+      await customComponent.initialize();
+
+      await _seedTaskItems(customComponent, [
+        {'content': 'custom named item', 'category': 'context', 'importance': 0.5, 'action': 'new'},
+      ]);
+
+      final results = await customComponent.recall('custom named', _budget());
+      expect(results, isNotEmpty);
+      expect(results.first.componentName, 'working-memory');
+    });
+  });
+
+  // ── Integration: TaskMemory in engine ────────────────────────────────────
+
+  group('Integration: TaskMemory in engine', () {
+    late TaskMemory taskComponent;
+    late Souvenir engine;
+
+    setUp(() async {
+      taskComponent = TaskMemory();
+      engine = Souvenir(
+        components: [taskComponent],
+        budget: Budget(
+          totalTokens: 4000,
+          allocation: {'task': 4000},
+          tokenizer: const ApproximateTokenizer(),
+        ),
+        mixer: const WeightedMixer(weights: {'task': 1.0}),
+      );
+      await engine.initialize();
+    });
+
+    tearDown(() async {
+      await engine.close();
+    });
+
+    test('end-to-end consolidate and recall', () async {
+      await engine.record(
+        _episode('User wants to add dark mode to the app'),
+      );
+
+      final reports = await engine.consolidate(
+        (sys, user) async => jsonEncode({
+          'items': [
+            {
+              'content': 'Adding dark mode toggle to application',
+              'category': 'goal',
+              'importance': 0.85,
+              'action': 'new',
+            },
+          ],
+        }),
+      );
+
+      expect(reports, hasLength(1));
+      expect(reports.first.itemsCreated, 1);
+
+      final result = await engine.recall('dark mode');
+      expect(result.items, isNotEmpty);
+      expect(result.items.first.content, contains('dark mode'));
+      expect(result.items.first.componentName, 'task');
+    });
+
+    test('multi-component: TaskMemory alongside DurableMemory stub', () async {
+      final stub = StubComponent(
+        name: 'durable',
+        recallItems: [
+          LabeledRecall(
+            componentName: 'durable',
+            content: 'User prefers Dart for backend',
+            score: 0.8,
+          ),
+        ],
+      );
+
+      final multiEngine = Souvenir(
+        components: [taskComponent, stub],
+        budget: Budget(
+          totalTokens: 4000,
+          allocation: {'task': 2000, 'durable': 2000},
+          tokenizer: const ApproximateTokenizer(),
+        ),
+        mixer: const WeightedMixer(weights: {'task': 1.0, 'durable': 1.0}),
+      );
+      await multiEngine.initialize();
+
+      // Record and consolidate to seed task memory.
+      await multiEngine.record(
+        _episode('Working on Dart backend'),
+      );
+      await multiEngine.consolidate(
+        (sys, user) async => jsonEncode({
+          'items': [
+            {
+              'content': 'Building Dart backend API',
+              'category': 'goal',
+              'importance': 0.8,
+              'action': 'new',
+            },
+          ],
+        }),
+      );
+
+      final result = await multiEngine.recall('Dart backend');
+      final sources = result.items.map((i) => i.componentName).toSet();
+      expect(sources, contains('durable')); // From stub.
+      expect(sources, contains('task'));     // From task memory.
+      await multiEngine.close();
+    });
+
+    test('session boundary through engine', () async {
+      // Session 1.
+      await engine.record(_episode('task A', sessionId: 'ses_01'));
+      await engine.consolidate(
+        (sys, user) async => jsonEncode({
+          'items': [
+            {'content': 'Working on task A', 'category': 'goal', 'importance': 0.8, 'action': 'new'},
+          ],
+        }),
+      );
+
+      // Session 2 — should expire session 1 items.
+      await engine.record(_episode('task B', sessionId: 'ses_02'));
+      final reports = await engine.consolidate(
+        (sys, user) async => jsonEncode({
+          'items': [
+            {'content': 'Working on task B', 'category': 'goal', 'importance': 0.8, 'action': 'new'},
+          ],
+        }),
+      );
+
+      expect(reports.first.itemsDecayed, 1);
+
+      // Recall should only return session 2 items.
+      final result = await engine.recall('Working on task');
+      final contents = result.items.map((i) => i.content).toList();
+      expect(contents.any((c) => c.contains('task B')), isTrue);
+      // Task A should be expired and not returned.
+      expect(contents.any((c) => c.contains('task A')), isFalse);
+    });
+
+    test('budget allocation respected', () async {
+      await engine.record(_episode('test'));
+      await engine.consolidate(
+        (sys, user) async => jsonEncode({
+          'items': [
+            {'content': 'some task item', 'category': 'context', 'importance': 0.5, 'action': 'new'},
+          ],
+        }),
+      );
+
+      // Engine allocates 4000 tokens to 'task'.
+      final result = await engine.recall('task item');
+      expect(result.items, isNotEmpty);
+      expect(result.totalTokensUsed, greaterThan(0));
+    });
+
+    test('empty recall before any consolidation', () async {
+      final result = await engine.recall('anything');
+      expect(result.items, isEmpty);
+    });
+  });
 }
