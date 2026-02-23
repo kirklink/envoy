@@ -23,6 +23,12 @@ export 'src/task/task_memory.dart';
 export 'src/task/task_memory_config.dart';
 export 'src/task/task_memory_store.dart';
 
+// Environmental memory component.
+export 'src/environmental/environmental_item.dart';
+export 'src/environmental/environmental_memory.dart';
+export 'src/environmental/environmental_memory_config.dart';
+export 'src/environmental/environmental_memory_store.dart';
+
 // SQLite episode store.
 export 'src/sqlite_episode_store.dart';
 

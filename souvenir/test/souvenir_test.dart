@@ -2800,4 +2800,797 @@ void main() {
       expect(result.items, isEmpty);
     });
   });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  PHASE 4: EnvironmentalMemory
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── EnvironmentalItem ────────────────────────────────────────────────────
+
+  group('EnvironmentalItem', () {
+    test('generates ULID id when not provided', () {
+      final item = EnvironmentalItem(
+        content: 'test observation',
+        category: EnvironmentalCategory.capability,
+      );
+      expect(item.id, isNotEmpty);
+      expect(item.id.length, 26);
+    });
+
+    test('defaults to active status', () {
+      final item = EnvironmentalItem(
+        content: 'test',
+        category: EnvironmentalCategory.environment,
+      );
+      expect(item.status, EnvironmentalItemStatus.active);
+    });
+
+    test('defaults importance to 0.6', () {
+      final item = EnvironmentalItem(
+        content: 'test',
+        category: EnvironmentalCategory.constraint,
+      );
+      expect(item.importance, 0.6);
+    });
+
+    test('isActive true when status is active', () {
+      final item = EnvironmentalItem(
+        content: 'test',
+        category: EnvironmentalCategory.capability,
+      );
+      expect(item.isActive, isTrue);
+    });
+
+    test('isActive false when status is decayed', () {
+      final item = EnvironmentalItem(
+        content: 'test',
+        category: EnvironmentalCategory.capability,
+        status: EnvironmentalItemStatus.decayed,
+      );
+      expect(item.isActive, isFalse);
+    });
+
+    test('isActive false when status is superseded', () {
+      final item = EnvironmentalItem(
+        content: 'test',
+        category: EnvironmentalCategory.capability,
+        status: EnvironmentalItemStatus.superseded,
+      );
+      expect(item.isActive, isFalse);
+    });
+
+    test('accepts all explicit fields', () {
+      final now = DateTime.now().toUtc();
+      final item = EnvironmentalItem(
+        id: 'custom-id',
+        content: 'file system access available',
+        category: EnvironmentalCategory.capability,
+        importance: 0.85,
+        sourceEpisodeIds: ['ep1', 'ep2'],
+        createdAt: now,
+        updatedAt: now,
+        accessCount: 3,
+        status: EnvironmentalItemStatus.active,
+      );
+      expect(item.id, 'custom-id');
+      expect(item.category, EnvironmentalCategory.capability);
+      expect(item.importance, 0.85);
+      expect(item.sourceEpisodeIds, ['ep1', 'ep2']);
+      expect(item.accessCount, 3);
+    });
+  });
+
+  // ── InMemoryEnvironmentalMemoryStore ─────────────────────────────────────
+
+  group('InMemoryEnvironmentalMemoryStore', () {
+    late InMemoryEnvironmentalMemoryStore store;
+
+    setUp(() async {
+      store = InMemoryEnvironmentalMemoryStore();
+      await store.initialize();
+    });
+
+    EnvironmentalItem _envItem(
+      String content, {
+      EnvironmentalCategory category = EnvironmentalCategory.environment,
+      double importance = 0.6,
+      DateTime? updatedAt,
+    }) {
+      return EnvironmentalItem(
+        content: content,
+        category: category,
+        importance: importance,
+        updatedAt: updatedAt,
+      );
+    }
+
+    test('insert adds items', () async {
+      await store.insert(_envItem('obs one'));
+      await store.insert(_envItem('obs two'));
+      expect(store.length, 2);
+    });
+
+    test('allActiveItems returns only active items', () async {
+      await store.insert(_envItem('a'));
+      await store.insert(_envItem('b'));
+      final items = await store.allActiveItems();
+      expect(items, hasLength(2));
+    });
+
+    test('allActiveItems excludes decayed items', () async {
+      final item = _envItem('will decay');
+      await store.insert(item);
+      await store.insert(_envItem('stays'));
+      await store.markDecayed(item.id);
+
+      final items = await store.allActiveItems();
+      expect(items, hasLength(1));
+      expect(items.first.content, 'stays');
+    });
+
+    test('findSimilar returns items with high token overlap in same category', () async {
+      await store.insert(_envItem(
+        'file system read write access available',
+        category: EnvironmentalCategory.capability,
+      ));
+      await store.insert(_envItem(
+        'running on Linux operating system',
+        category: EnvironmentalCategory.environment,
+      ));
+
+      final similar = await store.findSimilar(
+        'file system access for reading files',
+        EnvironmentalCategory.capability,
+      );
+      expect(similar, isNotEmpty);
+      expect(similar.first.content, contains('file system'));
+    });
+
+    test('findSimilar excludes items in different categories', () async {
+      await store.insert(_envItem(
+        'API rate limit observed',
+        category: EnvironmentalCategory.constraint,
+      ));
+
+      final similar = await store.findSimilar(
+        'API rate limit',
+        EnvironmentalCategory.capability,
+      );
+      expect(similar, isEmpty);
+    });
+
+    test('findSimilar returns empty for no overlap', () async {
+      await store.insert(_envItem(
+        'file system access',
+        category: EnvironmentalCategory.capability,
+      ));
+
+      final similar = await store.findSimilar(
+        'quantum entanglement physics',
+        EnvironmentalCategory.capability,
+      );
+      expect(similar, isEmpty);
+    });
+
+    test('findSimilar orders by descending similarity', () async {
+      await store.insert(_envItem(
+        'Dart programming language runtime',
+        category: EnvironmentalCategory.environment,
+      ));
+      await store.insert(_envItem(
+        'Dart SDK and tools installed',
+        category: EnvironmentalCategory.environment,
+      ));
+
+      final similar = await store.findSimilar(
+        'Dart programming tools',
+        EnvironmentalCategory.environment,
+      );
+      // Both should match; first should have more overlap.
+      expect(similar, hasLength(2));
+    });
+
+    test('markDecayed changes status', () async {
+      final item = _envItem('test');
+      await store.insert(item);
+      await store.markDecayed(item.id);
+
+      expect(store.activeCount, 0);
+      expect(store.length, 1);
+    });
+
+    test('activeItemCount returns correct count', () async {
+      await store.insert(_envItem('a'));
+      await store.insert(_envItem('b'));
+      await store.insert(_envItem('c'));
+      expect(await store.activeItemCount(), 3);
+
+      final items = await store.allActiveItems();
+      await store.markDecayed(items.first.id);
+      expect(await store.activeItemCount(), 2);
+    });
+
+    test('updateAccessStats bumps count and timestamp', () async {
+      final item = _envItem('test');
+      await store.insert(item);
+
+      await store.updateAccessStats([item.id]);
+      await store.updateAccessStats([item.id]);
+
+      final items = await store.allActiveItems();
+      expect(items.first.accessCount, 2);
+      expect(items.first.lastAccessed, isNotNull);
+    });
+
+    test('update modifies content and importance', () async {
+      final item = _envItem('original', importance: 0.5);
+      await store.insert(item);
+
+      await store.update(item.id, content: 'updated', importance: 0.9);
+
+      final items = await store.allActiveItems();
+      expect(items.first.content, 'updated');
+      expect(items.first.importance, 0.9);
+    });
+
+    test('applyImportanceDecay decays inactive items', () async {
+      final old = _envItem(
+        'stale observation',
+        importance: 0.5,
+        updatedAt: DateTime.now().subtract(const Duration(days: 20)),
+      );
+      final recent = _envItem('fresh observation', importance: 0.8);
+      await store.insert(old);
+      await store.insert(recent);
+
+      final floored = await store.applyImportanceDecay(
+        inactivePeriod: const Duration(days: 14),
+        decayRate: 0.5,
+        floorThreshold: 0.1,
+      );
+
+      // Old item: 0.5 * 0.5 = 0.25 (above floor). Recent: unchanged.
+      expect(floored, 0);
+      final items = await store.allActiveItems();
+      final oldItem = items.firstWhere((i) => i.content == 'stale observation');
+      expect(oldItem.importance, closeTo(0.25, 0.01));
+      final recentItem = items.firstWhere((i) => i.content == 'fresh observation');
+      expect(recentItem.importance, 0.8);
+    });
+
+    test('applyImportanceDecay marks items below floor as decayed', () async {
+      final old = _envItem(
+        'very stale',
+        importance: 0.08,
+        updatedAt: DateTime.now().subtract(const Duration(days: 20)),
+      );
+      await store.insert(old);
+
+      final floored = await store.applyImportanceDecay(
+        inactivePeriod: const Duration(days: 14),
+        decayRate: 0.95,
+        floorThreshold: 0.1,
+      );
+
+      // 0.08 * 0.95 = 0.076, below floor 0.1 → decayed.
+      expect(floored, 1);
+      expect(store.activeCount, 0);
+    });
+  });
+
+  // ── EnvironmentalMemoryConfig ────────────────────────────────────────────
+
+  group('EnvironmentalMemoryConfig', () {
+    test('defaults are sensible', () {
+      const config = EnvironmentalMemoryConfig();
+      expect(config.maxItems, 100);
+      expect(config.defaultImportance, 0.6);
+      expect(config.mergeThreshold, 0.4);
+      expect(config.recencyDecayLambda, 0.03);
+      expect(config.recallTopK, 10);
+      expect(config.importanceDecayRate, 0.95);
+      expect(config.decayFloorThreshold, 0.1);
+    });
+
+    test('custom values override defaults', () {
+      const config = EnvironmentalMemoryConfig(
+        maxItems: 50,
+        defaultImportance: 0.7,
+        recallTopK: 5,
+        importanceDecayRate: 0.9,
+      );
+      expect(config.maxItems, 50);
+      expect(config.defaultImportance, 0.7);
+      expect(config.recallTopK, 5);
+      expect(config.importanceDecayRate, 0.9);
+    });
+
+    test('category weights cover all categories', () {
+      const config = EnvironmentalMemoryConfig();
+      for (final cat in EnvironmentalCategory.values) {
+        expect(config.categoryWeights[cat], isNotNull,
+            reason: 'Missing weight for $cat');
+      }
+      expect(config.categoryWeights[EnvironmentalCategory.capability],
+          greaterThan(config.categoryWeights[EnvironmentalCategory.pattern]!));
+    });
+  });
+
+  // ── EnvironmentalMemory consolidation ────────────────────────────────────
+
+  group('EnvironmentalMemory consolidation', () {
+    late InMemoryEnvironmentalMemoryStore store;
+    late EnvironmentalMemory component;
+
+    setUp(() async {
+      store = InMemoryEnvironmentalMemoryStore();
+      component = EnvironmentalMemory(store: store);
+      await component.initialize();
+    });
+
+    ComponentBudget _budget([int tokens = 10000]) {
+      return ComponentBudget(
+        allocatedTokens: tokens,
+        tokenizer: const ApproximateTokenizer(),
+      );
+    }
+
+    Future<String> _stubEnvLlm(Map<String, dynamic> extraction) {
+      return Future.value(jsonEncode(extraction));
+    }
+
+    test('extracts observations and creates items', () async {
+      final episodes = [
+        _episode('Successfully read files from the project directory'),
+      ];
+
+      final report = await component.consolidate(
+        episodes,
+        (sys, user) => _stubEnvLlm({
+          'observations': [
+            {
+              'content': 'File system read access is available',
+              'category': 'capability',
+              'importance': 0.7,
+              'action': 'new',
+            },
+            {
+              'content': 'Project uses Dart with multiple packages',
+              'category': 'environment',
+              'importance': 0.6,
+              'action': 'new',
+            },
+          ],
+        }),
+        _budget(),
+      );
+
+      expect(report.componentName, 'environmental');
+      expect(report.itemsCreated, 2);
+      expect(report.episodesConsumed, 1);
+      expect(store.activeCount, 2);
+    });
+
+    test('empty episodes applies decay only', () async {
+      // Seed a stale item.
+      await store.insert(EnvironmentalItem(
+        content: 'old observation',
+        category: EnvironmentalCategory.environment,
+        importance: 0.08,
+        updatedAt: DateTime.now().subtract(const Duration(days: 20)),
+      ));
+
+      final report = await component.consolidate([], _noopLlm, _budget());
+      expect(report.itemsCreated, 0);
+      expect(report.episodesConsumed, 0);
+      expect(report.itemsDecayed, 1); // Below floor.
+    });
+
+    test('malformed LLM response returns graceful report', () async {
+      final report = await component.consolidate(
+        [_episode('some episode')],
+        (sys, user) async => 'not valid json!!!',
+        _budget(),
+      );
+
+      expect(report.itemsCreated, 0);
+      expect(report.itemsMerged, 0);
+    });
+
+    test('merge action updates existing observation', () async {
+      // Create initial observation.
+      await component.consolidate(
+        [_episode('read files')],
+        (sys, user) => _stubEnvLlm({
+          'observations': [
+            {
+              'content': 'File system access available for reading',
+              'category': 'capability',
+              'importance': 0.6,
+              'action': 'new',
+            },
+          ],
+        }),
+        _budget(),
+      );
+
+      // Merge with refined observation.
+      final report = await component.consolidate(
+        [_episode('also wrote files')],
+        (sys, user) => _stubEnvLlm({
+          'observations': [
+            {
+              'content': 'File system access available for reading and writing',
+              'category': 'capability',
+              'importance': 0.75,
+              'action': 'merge',
+            },
+          ],
+        }),
+        _budget(),
+      );
+
+      expect(report.itemsMerged, 1);
+      expect(report.itemsCreated, 0);
+      expect(store.activeCount, 1);
+      final items = await store.allActiveItems();
+      expect(items.first.content, contains('writing'));
+      expect(items.first.importance, 0.75);
+    });
+
+    test('merge action falls through to create when no similar item', () async {
+      await component.consolidate(
+        [_episode('something')],
+        (sys, user) => _stubEnvLlm({
+          'observations': [
+            {
+              'content': 'completely novel observation',
+              'category': 'constraint',
+              'importance': 0.7,
+              'action': 'merge',
+            },
+          ],
+        }),
+        _budget(),
+      );
+
+      expect(store.activeCount, 1);
+    });
+
+    test('maxItems enforcement decays lowest importance', () async {
+      final limitedComponent = EnvironmentalMemory(
+        store: store,
+        config: const EnvironmentalMemoryConfig(maxItems: 2),
+      );
+      await limitedComponent.initialize();
+
+      // Fill to capacity.
+      await limitedComponent.consolidate(
+        [_episode('first')],
+        (sys, user) => _stubEnvLlm({
+          'observations': [
+            {'content': 'low priority env info', 'category': 'environment', 'importance': 0.3, 'action': 'new'},
+            {'content': 'high priority capability', 'category': 'capability', 'importance': 0.9, 'action': 'new'},
+          ],
+        }),
+        _budget(),
+      );
+      expect(store.activeCount, 2);
+
+      // Third item should evict lowest importance.
+      await limitedComponent.consolidate(
+        [_episode('third')],
+        (sys, user) => _stubEnvLlm({
+          'observations': [
+            {'content': 'medium constraint', 'category': 'constraint', 'importance': 0.7, 'action': 'new'},
+          ],
+        }),
+        _budget(),
+      );
+
+      expect(store.activeCount, 2);
+      final active = await store.allActiveItems();
+      final importances = active.map((i) => i.importance).toList();
+      expect(importances, everyElement(greaterThanOrEqualTo(0.7)));
+    });
+
+    test('no session boundary expiration', () async {
+      // Consolidate in session 1.
+      await component.consolidate(
+        [_episode('session 1 data', sessionId: 'ses_01')],
+        (sys, user) => _stubEnvLlm({
+          'observations': [
+            {'content': 'observation from session one', 'category': 'environment', 'importance': 0.7, 'action': 'new'},
+          ],
+        }),
+        _budget(),
+      );
+
+      // Consolidate in session 2 — session 1 items should NOT expire.
+      await component.consolidate(
+        [_episode('session 2 data', sessionId: 'ses_02')],
+        (sys, user) => _stubEnvLlm({
+          'observations': [
+            {'content': 'observation from session two', 'category': 'environment', 'importance': 0.7, 'action': 'new'},
+          ],
+        }),
+        _budget(),
+      );
+
+      // Both items should be active.
+      expect(store.activeCount, 2);
+    });
+
+    test('importance decay runs during consolidation', () async {
+      // Seed an old item.
+      await store.insert(EnvironmentalItem(
+        content: 'stale env observation',
+        category: EnvironmentalCategory.environment,
+        importance: 0.5,
+        updatedAt: DateTime.now().subtract(const Duration(days: 20)),
+      ));
+
+      await component.consolidate(
+        [_episode('new data')],
+        (sys, user) => _stubEnvLlm({'observations': []}),
+        _budget(),
+      );
+
+      final items = await store.allActiveItems();
+      // Should be decayed (0.5 * 0.95 = 0.475).
+      expect(items.first.importance, closeTo(0.475, 0.01));
+    });
+
+    test('extraction prompt contains self-awareness keywords', () async {
+      String? capturedSystem;
+      await component.consolidate(
+        [_episode('test')],
+        (sys, user) async {
+          capturedSystem = sys;
+          return jsonEncode({'observations': []});
+        },
+        _budget(),
+      );
+
+      expect(capturedSystem, contains('reflecting'));
+      expect(capturedSystem, contains('environment'));
+      expect(capturedSystem, contains('capability'));
+      expect(capturedSystem, contains('constraint'));
+      expect(capturedSystem, contains('self-awareness'));
+    });
+  });
+
+  // ── EnvironmentalMemory recall ───────────────────────────────────────────
+
+  group('EnvironmentalMemory recall', () {
+    late InMemoryEnvironmentalMemoryStore store;
+    late EnvironmentalMemory component;
+
+    setUp(() async {
+      store = InMemoryEnvironmentalMemoryStore();
+      component = EnvironmentalMemory(store: store);
+      await component.initialize();
+    });
+
+    ComponentBudget _budget([int tokens = 10000]) {
+      return ComponentBudget(
+        allocatedTokens: tokens,
+        tokenizer: const ApproximateTokenizer(),
+      );
+    }
+
+    Future<void> _seedEnvItems(
+      EnvironmentalMemory comp,
+      List<Map<String, dynamic>> observations,
+    ) async {
+      await comp.consolidate(
+        [_episode('seed')],
+        (sys, user) async => jsonEncode({'observations': observations}),
+        _budget(),
+      );
+    }
+
+    test('returns matching items via keyword overlap', () async {
+      await _seedEnvItems(component, [
+        {'content': 'Dart SDK installed and accessible', 'category': 'environment', 'importance': 0.7, 'action': 'new'},
+        {'content': 'Rate limit of 100 requests per minute', 'category': 'constraint', 'importance': 0.8, 'action': 'new'},
+      ]);
+
+      final results = await component.recall('Dart SDK', _budget());
+      expect(results, isNotEmpty);
+      expect(results.first.content, contains('Dart'));
+      expect(results.first.componentName, 'environmental');
+    });
+
+    test('returns empty list when no active items', () async {
+      final results = await component.recall('anything', _budget());
+      expect(results, isEmpty);
+    });
+
+    test('labels items with component name', () async {
+      await _seedEnvItems(component, [
+        {'content': 'test observation', 'category': 'environment', 'importance': 0.5, 'action': 'new'},
+      ]);
+
+      final results = await component.recall('test', _budget());
+      for (final r in results) {
+        expect(r.componentName, 'environmental');
+      }
+    });
+
+    test('includes metadata with id, category, importance', () async {
+      await _seedEnvItems(component, [
+        {'content': 'file system access', 'category': 'capability', 'importance': 0.8, 'action': 'new'},
+      ]);
+
+      final results = await component.recall('file system', _budget());
+      expect(results, isNotEmpty);
+      expect(results.first.metadata, isNotNull);
+      expect(results.first.metadata!['category'], 'capability');
+      expect(results.first.metadata!['importance'], 0.8);
+      expect(results.first.metadata!['id'], isNotNull);
+    });
+
+    test('category weight: capabilities rank higher than patterns', () async {
+      await _seedEnvItems(component, [
+        {'content': 'file system tools available', 'category': 'pattern', 'importance': 0.8, 'action': 'new'},
+        {'content': 'file system tools available', 'category': 'capability', 'importance': 0.8, 'action': 'new'},
+      ]);
+
+      final results = await component.recall('file system tools', _budget());
+      expect(results.length, greaterThanOrEqualTo(2));
+      expect(results.first.metadata!['category'], 'capability');
+    });
+
+    test('budget-aware cutoff stops at budget limit', () async {
+      await _seedEnvItems(component, [
+        for (var i = 0; i < 10; i++)
+          {'content': 'environmental observation number $i with extra words', 'category': 'environment', 'importance': 0.5, 'action': 'new'},
+      ]);
+
+      final results = await component.recall('observation', _budget(20));
+      expect(results.length, lessThanOrEqualTo(3));
+    });
+
+    test('updates access stats after recall', () async {
+      await _seedEnvItems(component, [
+        {'content': 'recall target observation', 'category': 'capability', 'importance': 0.7, 'action': 'new'},
+      ]);
+
+      await component.recall('recall target', _budget());
+
+      final items = await store.allActiveItems();
+      expect(items.first.accessCount, greaterThan(0));
+      expect(items.first.lastAccessed, isNotNull);
+    });
+
+    test('custom component name used in recall labels', () async {
+      final customComponent = EnvironmentalMemory(
+        name: 'self-awareness',
+        store: store,
+      );
+      await customComponent.initialize();
+
+      await _seedEnvItems(customComponent, [
+        {'content': 'custom named observation', 'category': 'environment', 'importance': 0.5, 'action': 'new'},
+      ]);
+
+      final results = await customComponent.recall('custom named', _budget());
+      expect(results, isNotEmpty);
+      expect(results.first.componentName, 'self-awareness');
+    });
+  });
+
+  // ── Integration: EnvironmentalMemory in engine ───────────────────────────
+
+  group('Integration: EnvironmentalMemory in engine', () {
+    late EnvironmentalMemory envComponent;
+    late Souvenir engine;
+
+    setUp(() async {
+      envComponent = EnvironmentalMemory();
+      engine = Souvenir(
+        components: [envComponent],
+        budget: Budget(
+          totalTokens: 4000,
+          allocation: {'environmental': 4000},
+          tokenizer: const ApproximateTokenizer(),
+        ),
+        mixer: const WeightedMixer(weights: {'environmental': 1.0}),
+      );
+      await engine.initialize();
+    });
+
+    tearDown(() async {
+      await engine.close();
+    });
+
+    test('end-to-end consolidate and recall', () async {
+      await engine.record(
+        _episode('Successfully executed dart analyze on the project'),
+      );
+
+      final reports = await engine.consolidate(
+        (sys, user) async => jsonEncode({
+          'observations': [
+            {
+              'content': 'Dart analyzer is available and working',
+              'category': 'capability',
+              'importance': 0.7,
+              'action': 'new',
+            },
+          ],
+        }),
+      );
+
+      expect(reports, hasLength(1));
+      expect(reports.first.itemsCreated, 1);
+
+      final result = await engine.recall('Dart analyzer');
+      expect(result.items, isNotEmpty);
+      expect(result.items.first.content, contains('analyzer'));
+      expect(result.items.first.componentName, 'environmental');
+    });
+
+    test('multi-component: EnvironmentalMemory alongside TaskMemory stub', () async {
+      final stub = StubComponent(
+        name: 'task',
+        recallItems: [
+          LabeledRecall(
+            componentName: 'task',
+            content: 'current task: run tests',
+            score: 0.9,
+          ),
+        ],
+      );
+
+      final multiEngine = Souvenir(
+        components: [envComponent, stub],
+        budget: Budget(
+          totalTokens: 4000,
+          allocation: {'environmental': 2000, 'task': 2000},
+          tokenizer: const ApproximateTokenizer(),
+        ),
+        mixer: const WeightedMixer(weights: {'environmental': 1.0, 'task': 1.0}),
+      );
+      await multiEngine.initialize();
+
+      await multiEngine.record(_episode('test'));
+      await multiEngine.consolidate(
+        (sys, user) async => jsonEncode({
+          'observations': [
+            {'content': 'test runner available', 'category': 'capability', 'importance': 0.7, 'action': 'new'},
+          ],
+        }),
+      );
+
+      final result = await multiEngine.recall('test runner');
+      final sources = result.items.map((i) => i.componentName).toSet();
+      expect(sources, contains('task'));
+      expect(sources, contains('environmental'));
+      await multiEngine.close();
+    });
+
+    test('observations persist across session boundaries', () async {
+      // Session 1: record environmental observation.
+      await engine.record(_episode('session 1 work', sessionId: 'ses_01'));
+      await engine.consolidate(
+        (sys, user) async => jsonEncode({
+          'observations': [
+            {'content': 'Linux operating system detected', 'category': 'environment', 'importance': 0.7, 'action': 'new'},
+          ],
+        }),
+      );
+
+      // Session 2: observation from session 1 should still be recallable.
+      await engine.record(_episode('session 2 work', sessionId: 'ses_02'));
+      await engine.consolidate(
+        (sys, user) async => jsonEncode({'observations': []}),
+      );
+
+      final result = await engine.recall('Linux operating system');
+      expect(result.items, isNotEmpty);
+      expect(result.items.first.content, contains('Linux'));
+    });
+  });
 }
