@@ -37,5 +37,6 @@ export 'src/task/cellar_task_memory_store.dart';
 
 // Carried from v1 (unchanged).
 export 'src/embedding_provider.dart';
+export 'src/ollama_embedding_provider.dart';
 export 'src/llm_callback.dart';
 export 'src/models/episode.dart';
