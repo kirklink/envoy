@@ -1,0 +1,9 @@
+# Dart build artifacts
+.dart_tool/
+.packages
+build/
+pubspec.lock
+
+# Eval results (local to each developer's tuning session)
+eval/results.jsonl
+eval/latest.md
