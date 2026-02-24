@@ -1032,4 +1032,80 @@ void main() {
       expect(mems.first.component, 'durable');
     });
   });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Config defaults
+  // ══════════════════════════════════════════════════════════════════════════
+
+  group('TaskMemoryConfig', () {
+    test('has sensible defaults', () {
+      const config = TaskMemoryConfig();
+      expect(config.maxItemsPerSession, 50);
+      expect(config.defaultImportance, 0.6);
+      expect(config.mergeThreshold, 0.4);
+    });
+
+    test('accepts custom values', () {
+      const config = TaskMemoryConfig(
+        maxItemsPerSession: 10,
+        defaultImportance: 0.8,
+        mergeThreshold: 0.7,
+      );
+      expect(config.maxItemsPerSession, 10);
+      expect(config.defaultImportance, 0.8);
+      expect(config.mergeThreshold, 0.7);
+    });
+  });
+
+  group('EnvironmentalMemoryConfig', () {
+    test('has sensible defaults', () {
+      const config = EnvironmentalMemoryConfig();
+      expect(config.defaultImportance, 0.6);
+      expect(config.mergeThreshold, 0.4);
+      expect(config.importanceDecayRate, 0.95);
+      expect(config.decayInactivePeriod, const Duration(days: 14));
+      expect(config.decayFloorThreshold, 0.1);
+    });
+
+    test('accepts custom values', () {
+      const config = EnvironmentalMemoryConfig(
+        defaultImportance: 0.8,
+        mergeThreshold: 0.6,
+        importanceDecayRate: 0.9,
+        decayInactivePeriod: Duration(days: 7),
+        decayFloorThreshold: 0.2,
+      );
+      expect(config.defaultImportance, 0.8);
+      expect(config.mergeThreshold, 0.6);
+      expect(config.importanceDecayRate, 0.9);
+      expect(config.decayInactivePeriod, const Duration(days: 7));
+      expect(config.decayFloorThreshold, 0.2);
+    });
+  });
+
+  group('DurableMemoryConfig', () {
+    test('has sensible defaults', () {
+      const config = DurableMemoryConfig();
+      expect(config.mergeThreshold, 0.5);
+      expect(config.defaultImportance, 0.5);
+      expect(config.defaultConfidence, 1.0);
+      expect(config.importanceDecayRate, 0.97);
+      expect(config.decayInactivePeriod, const Duration(days: 90));
+    });
+
+    test('accepts custom values', () {
+      const config = DurableMemoryConfig(
+        mergeThreshold: 0.3,
+        defaultImportance: 0.7,
+        defaultConfidence: 0.8,
+        importanceDecayRate: 0.99,
+        decayInactivePeriod: Duration(days: 180),
+      );
+      expect(config.mergeThreshold, 0.3);
+      expect(config.defaultImportance, 0.7);
+      expect(config.defaultConfidence, 0.8);
+      expect(config.importanceDecayRate, 0.99);
+      expect(config.decayInactivePeriod, const Duration(days: 180));
+    });
+  });
 }

@@ -1,14 +1,12 @@
 import 'package:cellar/cellar.dart';
 
 import 'cellar_episode_store.dart';
-import 'durable/durable_memory_store.dart';
-import 'environmental/cellar_environmental_memory_store.dart';
-import 'task/cellar_task_memory_store.dart';
+import 'sqlite_memory_store.dart';
 
 /// Factory for creating Cellar-backed Souvenir stores.
 ///
 /// Manages collection registration, multi-agent prefix isolation, and
-/// encryption enforcement. Each agent gets its own set of collections
+/// encryption enforcement. Each agent gets its own set of tables
 /// in a shared Cellar database.
 ///
 /// ```dart
@@ -19,7 +17,7 @@ import 'task/cellar_task_memory_store.dart';
 ///   requireEncryption: true,
 /// );
 /// final episodeStore = sc.createEpisodeStore();
-/// final durableStore = sc.createDurableStore();
+/// final memoryStore = sc.createMemoryStore();
 /// ```
 class SouvenirCellar {
   /// The underlying Cellar instance.
@@ -57,46 +55,23 @@ class SouvenirCellar {
     return CellarEpisodeStore(cellar, '${prefix}episodes');
   }
 
-  /// Creates a [CellarTaskMemoryStore] for this agent.
-  CellarTaskMemoryStore createTaskStore() {
-    return CellarTaskMemoryStore(cellar, '${prefix}task_items');
-  }
-
-  /// Creates a [CellarEnvironmentalMemoryStore] for this agent.
-  CellarEnvironmentalMemoryStore createEnvironmentalStore() {
-    return CellarEnvironmentalMemoryStore(
-      cellar,
-      '${prefix}environmental_items',
-    );
-  }
-
-  /// Creates a [DurableMemoryStore] for this agent.
+  /// Creates a [SqliteMemoryStore] for this agent.
   ///
-  /// Uses [cellar.database] directly for raw SQL (multi-table, entity graph,
-  /// embeddings). The durable tables are still registered as Cellar
-  /// collections for DDL and auto-migration.
-  DurableMemoryStore createDurableStore() {
-    return DurableMemoryStore(cellar.database, prefix: prefix);
+  /// Uses [cellar.database] directly for raw SQL (FTS5, entity graph,
+  /// embeddings). The store manages its own DDL via [initialize].
+  SqliteMemoryStore createMemoryStore() {
+    return SqliteMemoryStore(cellar.database, prefix: prefix);
   }
 
   /// Returns the prefixed collection name for a given base name.
   String collectionName(String base) => '$prefix$base';
 
   void _registerCollections() {
-    // Episode store collection.
+    // Episode store collection (Cellar-managed).
     cellar.registerCollection(episodesCollection(prefix));
 
-    // Task memory collection.
-    cellar.registerCollection(taskItemsCollection(prefix));
-
-    // Environmental memory collection.
-    cellar.registerCollection(environmentalItemsCollection(prefix));
-
-    // Durable memory uses raw SQL but we register the collections
-    // so Cellar manages DDL and migration. The DurableMemoryStore
-    // handles its own DDL via initialize(), so we skip these for now
-    // to avoid conflicts. The raw tables are created by
-    // DurableMemoryStore.initialize().
+    // Memory store uses raw SQL and manages its own DDL via initialize().
+    // No Cellar collection registration needed.
   }
 
   /// Throws [StateError] if the database is not encrypted.
@@ -134,36 +109,6 @@ class SouvenirCellar {
           Field.int('access_count', defaultValue: 0),
           Field.bool('consolidated', defaultValue: false),
           Field.datetime('last_accessed', nullable: true),
-        ],
-      );
-
-  /// Task items collection schema.
-  static Collection taskItemsCollection(String prefix) => Collection(
-        name: '${prefix}task_items',
-        fields: [
-          Field.text('content', fts: true),
-          Field.text('category'),
-          Field.real('importance', defaultValue: 0.6),
-          Field.text('session_id'),
-          Field.json('source_episode_ids'),
-          Field.datetime('last_accessed', nullable: true),
-          Field.int('access_count', defaultValue: 0),
-          Field.text('status', defaultValue: 'active'),
-          Field.datetime('invalid_at', nullable: true),
-        ],
-      );
-
-  /// Environmental items collection schema.
-  static Collection environmentalItemsCollection(String prefix) => Collection(
-        name: '${prefix}environmental_items',
-        fields: [
-          Field.text('content', fts: true),
-          Field.text('category'),
-          Field.real('importance', defaultValue: 0.6),
-          Field.json('source_episode_ids'),
-          Field.datetime('last_accessed', nullable: true),
-          Field.int('access_count', defaultValue: 0),
-          Field.text('status', defaultValue: 'active'),
         ],
       );
 }
