@@ -1,4 +1,4 @@
-library envoy;
+library;
 
 export 'src/agent.dart';
 export 'src/agent_event.dart';
