@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'budget.dart';
 import 'labeled_recall.dart';
 
@@ -54,11 +56,14 @@ abstract class Mixer {
   );
 }
 
-/// Default mixer: weighted score rebalancing.
+/// Default mixer: per-component normalization + weighted score rebalancing.
 ///
-/// Multiplies each item's component-local score by the component's weight
-/// to produce a cross-component comparable score. Sorts by adjusted score
-/// descending, then takes items until the total token budget is exhausted.
+/// Each component's scores are first normalized to [0, 1] by dividing by the
+/// component's maximum score. This makes scores comparable across components
+/// that use fundamentally different scoring scales (e.g. Jaccard vs RRF).
+/// Weights then control how much each component contributes to the final
+/// ranking. Sorts by adjusted score descending, then takes items until the
+/// total token budget is exhausted.
 class WeightedMixer implements Mixer {
   /// Per-component weight multipliers. Components not listed default to 1.0.
   final Map<String, double> weights;
@@ -70,14 +75,21 @@ class WeightedMixer implements Mixer {
     Map<String, List<LabeledRecall>> componentRecalls,
     Budget budget,
   ) {
-    // 1. Build weighted items.
+    // 1. Normalize per-component scores to [0, 1], then apply weights.
+    //    Normalization ensures that RRF-based components (scores ~0.01-0.05)
+    //    compete fairly with Jaccard-based ones (scores ~0.05-1.0).
     final weighted = <_WeightedItem>[];
     for (final entry in componentRecalls.entries) {
       final componentWeight = weights[entry.key] ?? 1.0;
-      for (final recall in entry.value) {
+      final items = entry.value;
+      final maxScore = items.isEmpty
+          ? 0.0
+          : items.map((r) => r.score).reduce(math.max);
+      for (final recall in items) {
+        final normalizedScore = maxScore > 0 ? recall.score / maxScore : 0.0;
         weighted.add(_WeightedItem(
           recall: recall,
-          adjustedScore: recall.score * componentWeight,
+          adjustedScore: normalizedScore * componentWeight,
         ));
       }
     }

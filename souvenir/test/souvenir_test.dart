@@ -470,7 +470,9 @@ void main() {
     });
 
     test('component with no selected items gets zero usage', () {
-      const mixer = WeightedMixer();
+      // After normalization both single-item components score 1.0, so use
+      // weights to ensure 'a' wins the tight budget deterministically.
+      const mixer = WeightedMixer(weights: {'a': 2.0, 'b': 1.0});
       // Budget is 1 token. Only 'a' fits. 'b' is excluded.
       final result = mixer.mix({
         'a': [
@@ -485,7 +487,9 @@ void main() {
     });
 
     test('multiple components items interleaved by score', () {
-      const mixer = WeightedMixer();
+      // After per-component normalization, both a1 and b1 would be 1.0.
+      // Use a slight weight difference to break the tie deterministically.
+      const mixer = WeightedMixer(weights: {'a': 1.0, 'b': 0.8});
       final result = mixer.mix({
         'a': [
           LabeledRecall(componentName: 'a', content: 'a1', score: 0.9),
@@ -497,8 +501,41 @@ void main() {
         ],
       }, _testBudget(allocation: {'a': 500, 'b': 500}));
 
+      // a: [1.0, 0.556] × 1.0  →  [1.0, 0.556]
+      // b: [1.0, 0.429] × 0.8  →  [0.8, 0.343]
       final names = result.items.map((i) => i.content).toList();
       expect(names, ['a1', 'b1', 'a2', 'b2']);
+    });
+    test('normalizes cross-component score scales before mixing', () {
+      // Simulates the durable (RRF ~0.013) vs task (Jaccard ~0.069) bug.
+      // Without normalization: task wins even though durable has higher weight.
+      // With normalization: both top items become 1.0, weights decide ordering.
+      const mixer = WeightedMixer(weights: {'durable': 1.5, 'task': 1.2});
+      final result = mixer.mix({
+        'durable': [
+          // RRF-scale scores — rank-1 item at ~0.013
+          LabeledRecall(
+              componentName: 'durable', content: 'durable fact', score: 0.013),
+          LabeledRecall(
+              componentName: 'durable',
+              content: 'durable fact 2',
+              score: 0.008),
+        ],
+        'task': [
+          // Jaccard-scale scores
+          LabeledRecall(
+              componentName: 'task', content: 'task item', score: 0.069),
+          LabeledRecall(
+              componentName: 'task', content: 'task item 2', score: 0.040),
+        ],
+      }, _testBudget(allocation: {'durable': 500, 'task': 500}));
+
+      // After normalization: durable top = 1.0 × 1.5 = 1.5, task top = 1.0 × 1.2 = 1.2.
+      // Durable wins despite having 5× lower raw scores.
+      expect(result.items.first.componentName, 'durable');
+      // Both components represented in output.
+      final components = result.items.map((i) => i.componentName).toSet();
+      expect(components, containsAll(['durable', 'task']));
     });
   });
 
