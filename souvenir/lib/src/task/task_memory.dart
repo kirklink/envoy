@@ -1,14 +1,12 @@
 import 'dart:convert';
 import 'dart:math' as math;
 
-import '../budget.dart';
-import '../labeled_recall.dart';
 import '../llm_callback.dart';
 import '../memory_component.dart';
+import '../memory_store.dart';
 import '../models/episode.dart';
-import 'task_item.dart';
+import '../stored_memory.dart';
 import 'task_memory_config.dart';
-import 'task_memory_store.dart';
 
 const _systemPrompt = '''
 You are extracting task context from an agent's recent experience.
@@ -45,38 +43,31 @@ Rules:
 
 /// Task memory component: session-scoped, fast-decaying task context.
 ///
-/// Implements [MemoryComponent] with:
-/// - Aggressive LLM extraction (goals, decisions, results, context)
-/// - Session boundary detection (expire previous session on sessionId change)
-/// - Category-weighted recall with recency boost
-/// - In-memory storage by default (lightweight, no disk)
+/// Writes to the shared [MemoryStore] with `component: 'task'`. Recall
+/// is handled by the engine's unified recall pipeline.
 class TaskMemory implements MemoryComponent {
   @override
   final String name;
 
-  final TaskMemoryStore _store;
+  final MemoryStore _store;
   final TaskMemoryConfig _config;
   String? _currentSessionId;
 
   TaskMemory({
     this.name = 'task',
-    TaskMemoryStore? store,
+    required MemoryStore store,
     TaskMemoryConfig? config,
-  })  : _store = store ?? InMemoryTaskMemoryStore(),
+  })  : _store = store,
         _config = config ?? const TaskMemoryConfig();
 
   /// Visible for testing — the currently tracked session ID.
   String? get currentSessionId => _currentSessionId;
 
   @override
-  Future<void> initialize() async {
-    await _store.initialize();
-  }
+  Future<void> initialize() async {}
 
   @override
-  Future<void> close() async {
-    await _store.close();
-  }
+  Future<void> close() async {}
 
   // ── Consolidation ───────────────────────────────────────────────────────
 
@@ -84,7 +75,6 @@ class TaskMemory implements MemoryComponent {
   Future<ConsolidationReport> consolidate(
     List<Episode> episodes,
     LlmCallback llm,
-    ComponentBudget budget,
   ) async {
     if (episodes.isEmpty) {
       return ConsolidationReport(componentName: name);
@@ -96,7 +86,7 @@ class TaskMemory implements MemoryComponent {
     for (final sid in sessionIds) {
       if (_currentSessionId != null && sid != _currentSessionId) {
         itemsDecayed +=
-            await _store.expireSession(_currentSessionId!, DateTime.now().toUtc());
+            await _store.expireSession(_currentSessionId!, name);
       }
     }
     _currentSessionId = episodes.last.sessionId;
@@ -128,10 +118,6 @@ class TaskMemory implements MemoryComponent {
       final itemMap = rawItem as Map<String, dynamic>;
       final content = itemMap['content'] as String;
       final categoryName = itemMap['category'] as String? ?? 'context';
-      final category = TaskItemCategory.values.firstWhere(
-        (c) => c.name == categoryName,
-        orElse: () => TaskItemCategory.context,
-      );
       final importance = (itemMap['importance'] as num?)?.toDouble() ??
           _config.defaultImportance;
       final action = itemMap['action'] as String? ?? 'new';
@@ -140,8 +126,9 @@ class TaskMemory implements MemoryComponent {
       if (action == 'merge') {
         final similar = await _store.findSimilar(
           content,
-          category,
-          _currentSessionId!,
+          name,
+          category: categoryName,
+          sessionId: _currentSessionId,
         );
         if (similar.isNotEmpty) {
           final target = similar.first;
@@ -149,7 +136,8 @@ class TaskMemory implements MemoryComponent {
             target.id,
             content: content,
             importance: math.max(target.importance, importance),
-            sourceEpisodeIds: {...target.sourceEpisodeIds, ...episodeIds}.toList(),
+            sourceEpisodeIds:
+                {...target.sourceEpisodeIds, ...episodeIds}.toList(),
           );
           merged++;
           continue;
@@ -158,22 +146,29 @@ class TaskMemory implements MemoryComponent {
       }
 
       // Enforce maxItemsPerSession.
-      final activeCount = await _store.activeItemCount(_currentSessionId!);
+      final activeCount = await _store.activeItemCount(
+        name,
+        sessionId: _currentSessionId,
+      );
       if (activeCount >= _config.maxItemsPerSession) {
-        final activeItems =
-            await _store.activeItemsForSession(_currentSessionId!);
+        final activeItems = await _store.activeItemsForSession(
+          _currentSessionId!,
+          name,
+        );
         if (activeItems.isNotEmpty) {
-          activeItems.sort((a, b) => a.importance.compareTo(b.importance));
-          await _store.expireItem(activeItems.first.id, DateTime.now().toUtc());
+          final sorted = activeItems.toList()
+            ..sort((a, b) => a.importance.compareTo(b.importance));
+          await _store.expireItem(sorted.first.id);
           itemsDecayed++;
         }
       }
 
-      await _store.insert(TaskItem(
+      await _store.insert(StoredMemory(
         content: content,
-        category: category,
+        component: name,
+        category: categoryName,
         importance: importance,
-        sessionId: _currentSessionId!,
+        sessionId: _currentSessionId,
         sourceEpisodeIds: episodeIds,
       ));
       created++;
@@ -188,101 +183,7 @@ class TaskMemory implements MemoryComponent {
     );
   }
 
-  // ── Recall ──────────────────────────────────────────────────────────────
-
-  @override
-  Future<List<LabeledRecall>> recall(
-    String query,
-    ComponentBudget budget,
-  ) async {
-    if (_currentSessionId == null) return [];
-
-    final items = await _store.activeItemsForSession(_currentSessionId!);
-    if (items.isEmpty) return [];
-
-    final queryTokens = _tokenize(query);
-    final now = DateTime.now().toUtc();
-    final scored = <({TaskItem item, double score})>[];
-
-    for (final item in items) {
-      final itemTokens = _tokenize(item.content);
-
-      // Signal 1: Keyword overlap (Jaccard similarity).
-      double keywordScore;
-      if (queryTokens.isEmpty || itemTokens.isEmpty) {
-        keywordScore = 0.05;
-      } else {
-        final intersection = queryTokens.intersection(itemTokens);
-        final union = queryTokens.union(itemTokens);
-        keywordScore = union.isEmpty ? 0.05 : intersection.length / union.length;
-        // Floor so high-importance goals surface even for loosely related queries.
-        if (keywordScore == 0) keywordScore = 0.05;
-      }
-
-      // Signal 2: Recency boost (exponential decay, hours-scale).
-      final ageHours = now.difference(item.createdAt).inMinutes / 60.0;
-      final recencyMultiplier =
-          math.exp(-_config.recencyDecayLambda * math.max(0, ageHours));
-
-      // Signal 3: Category weight.
-      final categoryWeight = _config.categoryWeights[item.category] ?? 1.0;
-
-      // Signal 4: Importance.
-      final importanceMultiplier = item.importance;
-
-      final finalScore =
-          keywordScore * recencyMultiplier * categoryWeight * importanceMultiplier;
-
-      scored.add((item: item, score: finalScore));
-    }
-
-    // Sort descending.
-    scored.sort((a, b) => b.score.compareTo(a.score));
-
-    // Take topK.
-    final limited = scored.take(_config.recallTopK).toList();
-
-    // Budget-aware cutoff.
-    final results = <LabeledRecall>[];
-    final accessedIds = <String>[];
-
-    for (final s in limited) {
-      final tokens = budget.consume(s.item.content);
-      results.add(LabeledRecall(
-        componentName: name,
-        content: s.item.content,
-        score: s.score,
-        metadata: {
-          'id': s.item.id,
-          'category': s.item.category.name,
-          'importance': s.item.importance,
-          'tokens': tokens,
-        },
-      ));
-      accessedIds.add(s.item.id);
-
-      if (budget.isOverBudget) break;
-    }
-
-    // Update access stats.
-    if (accessedIds.isNotEmpty) {
-      await _store.updateAccessStats(accessedIds);
-    }
-
-    return results;
-  }
-
   // ── Private helpers ─────────────────────────────────────────────────────
-
-  /// Tokenizes text for keyword overlap scoring.
-  static Set<String> _tokenize(String text) {
-    return text
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^\w\s]'), ' ')
-        .split(RegExp(r'\s+'))
-        .where((t) => t.length > 2)
-        .toSet();
-  }
 
   /// Parses JSON from LLM response, handling markdown code fences.
   static Map<String, dynamic> _parseJson(String response) {

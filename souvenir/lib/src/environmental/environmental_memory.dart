@@ -1,14 +1,12 @@
 import 'dart:convert';
 import 'dart:math' as math;
 
-import '../budget.dart';
-import '../labeled_recall.dart';
 import '../llm_callback.dart';
 import '../memory_component.dart';
+import '../memory_store.dart';
 import '../models/episode.dart';
-import 'environmental_item.dart';
+import '../stored_memory.dart';
 import 'environmental_memory_config.dart';
-import 'environmental_memory_store.dart';
 
 const _systemPrompt = '''
 You are reflecting on what you learned about your own operating environment,
@@ -51,34 +49,27 @@ Rules:
 
 /// Environmental memory component: LLM self-awareness of operating context.
 ///
-/// Implements [MemoryComponent] with:
-/// - Self-reflective LLM extraction (capabilities, constraints, environment, patterns)
-/// - Cross-session persistence (no session boundary expiration)
-/// - Medium decay (days/weeks via importance decay)
-/// - Category-weighted recall with recency boost on days scale
+/// Writes to the shared [MemoryStore] with `component: 'environmental'`.
+/// Recall is handled by the engine's unified recall pipeline.
 class EnvironmentalMemory implements MemoryComponent {
   @override
   final String name;
 
-  final EnvironmentalMemoryStore _store;
+  final MemoryStore _store;
   final EnvironmentalMemoryConfig _config;
 
   EnvironmentalMemory({
     this.name = 'environmental',
-    EnvironmentalMemoryStore? store,
+    required MemoryStore store,
     EnvironmentalMemoryConfig? config,
-  })  : _store = store ?? InMemoryEnvironmentalMemoryStore(),
+  })  : _store = store,
         _config = config ?? const EnvironmentalMemoryConfig();
 
   @override
-  Future<void> initialize() async {
-    await _store.initialize();
-  }
+  Future<void> initialize() async {}
 
   @override
-  Future<void> close() async {
-    await _store.close();
-  }
+  Future<void> close() async {}
 
   // ── Consolidation ───────────────────────────────────────────────────────
 
@@ -86,10 +77,10 @@ class EnvironmentalMemory implements MemoryComponent {
   Future<ConsolidationReport> consolidate(
     List<Episode> episodes,
     LlmCallback llm,
-    ComponentBudget budget,
   ) async {
     // Always apply importance decay, even for empty episodes.
     final itemsDecayed = await _store.applyImportanceDecay(
+      component: name,
       inactivePeriod: _config.decayInactivePeriod,
       decayRate: _config.importanceDecayRate,
       floorThreshold: _config.decayFloorThreshold,
@@ -129,17 +120,17 @@ class EnvironmentalMemory implements MemoryComponent {
       final obsMap = rawObs as Map<String, dynamic>;
       final content = obsMap['content'] as String;
       final categoryName = obsMap['category'] as String? ?? 'environment';
-      final category = EnvironmentalCategory.values.firstWhere(
-        (c) => c.name == categoryName,
-        orElse: () => EnvironmentalCategory.environment,
-      );
       final importance = (obsMap['importance'] as num?)?.toDouble() ??
           _config.defaultImportance;
       final action = obsMap['action'] as String? ?? 'new';
 
       // Merge action: find existing similar observation in the same category.
       if (action == 'merge') {
-        final similar = await _store.findSimilar(content, category);
+        final similar = await _store.findSimilar(
+          content,
+          name,
+          category: categoryName,
+        );
         if (similar.isNotEmpty) {
           final target = similar.first;
           await _store.update(
@@ -155,19 +146,10 @@ class EnvironmentalMemory implements MemoryComponent {
         // No match — fall through to create new.
       }
 
-      // Enforce maxItems.
-      final activeCount = await _store.activeItemCount();
-      if (activeCount >= _config.maxItems) {
-        final activeItems = await _store.allActiveItems();
-        if (activeItems.isNotEmpty) {
-          activeItems.sort((a, b) => a.importance.compareTo(b.importance));
-          await _store.markDecayed(activeItems.first.id);
-        }
-      }
-
-      await _store.insert(EnvironmentalItem(
+      await _store.insert(StoredMemory(
         content: content,
-        category: category,
+        component: name,
+        category: categoryName,
         importance: importance,
         sourceEpisodeIds: episodeIds,
       ));
@@ -183,99 +165,7 @@ class EnvironmentalMemory implements MemoryComponent {
     );
   }
 
-  // ── Recall ──────────────────────────────────────────────────────────────
-
-  @override
-  Future<List<LabeledRecall>> recall(
-    String query,
-    ComponentBudget budget,
-  ) async {
-    final items = await _store.allActiveItems();
-    if (items.isEmpty) return [];
-
-    final queryTokens = _tokenize(query);
-    final now = DateTime.now().toUtc();
-    final scored = <({EnvironmentalItem item, double score})>[];
-
-    for (final item in items) {
-      final itemTokens = _tokenize(item.content);
-
-      // Signal 1: Keyword overlap (Jaccard similarity).
-      double keywordScore;
-      if (queryTokens.isEmpty || itemTokens.isEmpty) {
-        keywordScore = 0.05;
-      } else {
-        final intersection = queryTokens.intersection(itemTokens);
-        final union = queryTokens.union(itemTokens);
-        keywordScore =
-            union.isEmpty ? 0.05 : intersection.length / union.length;
-        if (keywordScore == 0) keywordScore = 0.05;
-      }
-
-      // Signal 2: Recency boost (days scale).
-      final ageDays = now.difference(item.createdAt).inHours / 24.0;
-      final recencyMultiplier =
-          math.exp(-_config.recencyDecayLambda * math.max(0, ageDays));
-
-      // Signal 3: Category weight.
-      final categoryWeight = _config.categoryWeights[item.category] ?? 1.0;
-
-      // Signal 4: Importance.
-      final importanceMultiplier = item.importance;
-
-      final finalScore =
-          keywordScore * recencyMultiplier * categoryWeight * importanceMultiplier;
-
-      scored.add((item: item, score: finalScore));
-    }
-
-    // Sort descending.
-    scored.sort((a, b) => b.score.compareTo(a.score));
-
-    // Take topK.
-    final limited = scored.take(_config.recallTopK).toList();
-
-    // Budget-aware cutoff.
-    final results = <LabeledRecall>[];
-    final accessedIds = <String>[];
-
-    for (final s in limited) {
-      final tokens = budget.consume(s.item.content);
-      results.add(LabeledRecall(
-        componentName: name,
-        content: s.item.content,
-        score: s.score,
-        metadata: {
-          'id': s.item.id,
-          'category': s.item.category.name,
-          'importance': s.item.importance,
-          'tokens': tokens,
-        },
-      ));
-      accessedIds.add(s.item.id);
-
-      if (budget.isOverBudget) break;
-    }
-
-    // Update access stats.
-    if (accessedIds.isNotEmpty) {
-      await _store.updateAccessStats(accessedIds);
-    }
-
-    return results;
-  }
-
   // ── Private helpers ─────────────────────────────────────────────────────
-
-  /// Tokenizes text for keyword overlap scoring.
-  static Set<String> _tokenize(String text) {
-    return text
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^\w\s]'), ' ')
-        .split(RegExp(r'\s+'))
-        .where((t) => t.length > 2)
-        .toSet();
-  }
 
   /// Parses JSON from LLM response, handling markdown code fences.
   static Map<String, dynamic> _parseJson(String response) {

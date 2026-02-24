@@ -1,5 +1,3 @@
-import 'budget.dart';
-import 'labeled_recall.dart';
 import 'llm_callback.dart';
 import 'models/episode.dart';
 
@@ -36,38 +34,27 @@ class ConsolidationReport {
   });
 }
 
-/// A pluggable memory component.
+/// A pluggable memory component (v3 — consolidation only).
 ///
-/// Each component owns its own storage, extraction logic, decay strategy,
-/// and recall behavior. Components are fully independent — no cross-component
-/// awareness. The engine coordinates them via [consolidate] and [recall].
+/// Components write to a shared [MemoryStore] during consolidation.
+/// Recall is handled by the engine's unified recall pipeline —
+/// components do not implement recall.
 abstract class MemoryComponent {
-  /// Unique name used for budget allocation and recall labeling.
-  ///
-  /// Must match the key used in [Budget.allocation] and mixer weights.
+  /// Unique name used as the `component` field on stored memories.
   String get name;
 
-  /// Called once at engine startup. Initialize storage, load state, etc.
+  /// Called once at engine startup.
   Future<void> initialize();
 
-  /// Consolidation: episodes are available for extraction.
+  /// Consolidation: extract and store memories from episodes.
   ///
-  /// The component independently decides what (if anything) to extract
-  /// and store. The [llm] callback is provided for components that need
-  /// LLM extraction; purely programmatic components may ignore it.
+  /// The component writes to the shared store (provided at construction)
+  /// with [StoredMemory.component] set to this component's [name].
+  /// The [llm] callback is provided for components that need LLM
+  /// extraction; purely programmatic components may ignore it.
   Future<ConsolidationReport> consolidate(
     List<Episode> episodes,
     LlmCallback llm,
-    ComponentBudget budget,
-  );
-
-  /// Recall: return items relevant to [query] within [budget].
-  ///
-  /// Each returned [LabeledRecall] must have [LabeledRecall.componentName]
-  /// set to this component's [name].
-  Future<List<LabeledRecall>> recall(
-    String query,
-    ComponentBudget budget,
   );
 
   /// Cleanup: release resources, close connections.
