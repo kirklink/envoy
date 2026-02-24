@@ -1,25 +1,27 @@
-import 'budget.dart';
+import 'embedding_provider.dart';
 import 'episode_store.dart';
 import 'llm_callback.dart';
 import 'memory_component.dart';
-import 'mixer.dart';
+import 'memory_store.dart';
 import 'models/episode.dart';
+import 'recall.dart';
+import 'tokenizer.dart';
 
-/// Souvenir v2: composable memory engine.
+/// Souvenir v3: unified recall memory engine.
 ///
-/// A registry and coordinator. Owns the episode buffer, component list,
-/// budget, and mixer. Does not contain memory logic itself — that lives
-/// in [MemoryComponent] implementations.
+/// A registry and coordinator. Owns the shared [MemoryStore], episode buffer,
+/// component list, and [UnifiedRecall] pipeline. Components handle
+/// consolidation (extraction + storage); recall is unified across all
+/// memories in the shared store.
 ///
 /// ```dart
+/// final store = InMemoryMemoryStore();
 /// final souvenir = Souvenir(
-///   components: [taskMemory, durableMemory],
-///   budget: Budget(
-///     totalTokens: 4000,
-///     allocation: {'task': 1000, 'durable': 3000},
-///     tokenizer: ApproximateTokenizer(),
+///   components: [taskMemory, durableMemory, envMemory],
+///   store: store,
+///   recallConfig: RecallConfig(
+///     componentWeights: {'durable': 1.5, 'task': 1.2},
 ///   ),
-///   mixer: WeightedMixer(weights: {'task': 1.2, 'durable': 1.5}),
 /// );
 /// await souvenir.initialize();
 /// ```
@@ -27,38 +29,61 @@ class Souvenir {
   /// Registered memory components.
   final List<MemoryComponent> components;
 
-  /// Token budget with per-component allocation.
-  final Budget budget;
+  /// Shared memory store used by all components and recall.
+  final MemoryStore store;
 
-  /// Mixer for combining recall results across components.
-  final Mixer mixer;
+  /// Unified recall pipeline.
+  final UnifiedRecall _recall;
 
-  final EpisodeStore _store;
+  /// Optional embedding provider for post-consolidation embedding generation.
+  final EmbeddingProvider? _embeddings;
+
+  final EpisodeStore _episodeStore;
   final int _flushThreshold;
+  final int _defaultBudgetTokens;
   final List<Episode> _buffer = [];
   bool _initialized = false;
 
-  /// Creates a Souvenir v2 engine.
+  /// Creates a Souvenir v3 engine.
   ///
-  /// [store] defaults to [InMemoryEpisodeStore]. [flushThreshold] defaults
-  /// to 50 (matching v1).
+  /// [store] is the shared memory store all components write to.
+  /// [episodeStore] defaults to [InMemoryEpisodeStore].
+  /// [recallConfig] controls signal weights, thresholds, and decay.
+  /// [embeddings] is optional — when provided, the engine generates
+  /// embeddings for new memories after each consolidation.
+  /// [tokenizer] defaults to [ApproximateTokenizer].
   Souvenir({
     required this.components,
-    required this.budget,
-    required this.mixer,
-    EpisodeStore? store,
+    required this.store,
+    EpisodeStore? episodeStore,
+    RecallConfig recallConfig = const RecallConfig(),
+    EmbeddingProvider? embeddings,
+    Tokenizer tokenizer = const ApproximateTokenizer(),
     int flushThreshold = 50,
-  })  : _store = store ?? InMemoryEpisodeStore(),
-        _flushThreshold = flushThreshold;
+    int defaultBudgetTokens = 4000,
+  })  : _episodeStore = episodeStore ?? InMemoryEpisodeStore(),
+        _embeddings = embeddings,
+        _flushThreshold = flushThreshold,
+        _defaultBudgetTokens = defaultBudgetTokens,
+        _recall = UnifiedRecall(
+          store: store,
+          tokenizer: tokenizer,
+          config: recallConfig,
+          embeddings: embeddings,
+        );
 
-  /// Initializes all components concurrently. Must be called before
-  /// [record], [consolidate], or [recall].
+  /// The recall configuration (for observability).
+  RecallConfig get recallConfig => _recall.config;
+
+  /// Initializes the shared store and all components concurrently.
+  /// Must be called before [record], [consolidate], or [recall].
   Future<void> initialize() async {
+    await store.initialize();
     await Future.wait(components.map((c) => c.initialize()));
     _initialized = true;
   }
 
-  /// Records an episode to the buffer. Auto-flushes at [flushThreshold].
+  /// Records an episode to the buffer. Auto-flushes at the threshold.
   Future<void> record(Episode episode) async {
     _requireInitialized();
     _buffer.add(episode);
@@ -72,58 +97,76 @@ class Souvenir {
     if (_buffer.isEmpty) return;
     final batch = List<Episode>.of(_buffer);
     _buffer.clear();
-    await _store.insert(batch);
+    await _episodeStore.insert(batch);
   }
 
   /// Consolidates unconsolidated episodes across all components.
   ///
-  /// Flushes the buffer first, then fetches unconsolidated episodes,
-  /// passes them to all components concurrently, and marks them
-  /// consolidated. Returns empty list if no unconsolidated episodes.
+  /// 1. Flushes the buffer.
+  /// 2. Fetches unconsolidated episodes from the episode store.
+  /// 3. Passes them to all components concurrently (components write to
+  ///    the shared [store]).
+  /// 4. Marks episodes consolidated.
+  /// 5. Generates embeddings for any unembedded memories.
+  ///
+  /// Returns empty list if no unconsolidated episodes exist.
   Future<List<ConsolidationReport>> consolidate(LlmCallback llm) async {
     _requireInitialized();
     await flush();
 
-    final episodes = await _store.fetchUnconsolidated();
+    final episodes = await _episodeStore.fetchUnconsolidated();
     if (episodes.isEmpty) return [];
 
     final reports = await Future.wait(
-      components.map((c) => c.consolidate(
-            episodes,
-            llm,
-            budget.forComponent(c.name),
-          )),
+      components.map((c) => c.consolidate(episodes, llm)),
     );
 
-    await _store.markConsolidated(episodes);
+    await _episodeStore.markConsolidated(episodes);
+
+    // Post-consolidation: generate embeddings for new memories.
+    if (_embeddings != null) {
+      await _generateEmbeddings();
+    }
+
     return reports;
   }
 
-  /// Recalls relevant items from all components and mixes them.
+  /// Recalls relevant memories for a query.
   ///
-  /// Queries all components concurrently, then passes results to
-  /// the [mixer] for ranking and budget trimming.
-  Future<MixResult> recall(String query) async {
+  /// Delegates to the [UnifiedRecall] pipeline which queries the shared
+  /// store with FTS5, vector similarity, and entity graph signals.
+  Future<RecallResult> recall(String query, {int? budgetTokens}) async {
     _requireInitialized();
-
-    final results = await Future.wait(
-      components.map((c) async => MapEntry(
-            c.name,
-            await c.recall(query, budget.forComponent(c.name)),
-          )),
+    return _recall.recall(
+      query,
+      budgetTokens: budgetTokens ?? _defaultBudgetTokens,
     );
-
-    final componentRecalls = Map.fromEntries(results);
-    return mixer.mix(componentRecalls, budget);
   }
 
   /// Number of episodes currently buffered in working memory.
   int get bufferSize => _buffer.length;
 
-  /// Flushes the buffer and closes all components.
+  /// Flushes the buffer and closes all components and the store.
   Future<void> close() async {
     await flush();
     await Future.wait(components.map((c) => c.close()));
+    await store.close();
+  }
+
+  // ── Private helpers ─────────────────────────────────────────────────────
+
+  /// Generates embeddings for memories that don't have them yet.
+  Future<void> _generateEmbeddings() async {
+    final unembedded = await store.findUnembeddedMemories();
+    for (final mem in unembedded) {
+      try {
+        final vector = await _embeddings!.embed(mem.content);
+        await store.update(mem.id, embedding: vector);
+      } catch (_) {
+        // Embedding failure is non-fatal — the memory is still searchable
+        // via FTS and entity graph signals.
+      }
+    }
   }
 
   void _requireInitialized() {

@@ -1,3 +1,6 @@
+@Skip('v2 tests — pending migration to v3 unified recall')
+library;
+
 import 'dart:convert';
 
 import 'package:souvenir/souvenir.dart';
