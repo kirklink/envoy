@@ -42,14 +42,19 @@ class EvalRunner {
     final store = InMemoryMemoryStore();
     await store.initialize();
 
+    // Use the configured provider, or fall back to the built-in fake provider
+    // so that vector recall is always active (memories are embedded during
+    // setup; recall needs the same provider to embed the query).
+    final effectiveEmbeddings = embeddings ?? EvalEmbeddingProvider();
+
     // Let the scenario populate the store.
-    await scenario.setup(store, embeddings);
+    await scenario.setup(store, effectiveEmbeddings);
 
     final recall = UnifiedRecall(
       store: store,
       tokenizer: tokenizer,
       config: config,
-      embeddings: embeddings,
+      embeddings: effectiveEmbeddings,
     );
 
     final queryResults = <QueryResult>[];

@@ -8,39 +8,44 @@ import 'types.dart';
 /// Fake embedding provider with manually-assigned semantic cluster vectors.
 ///
 /// Used when no real embedding provider is configured (fast, deterministic).
-/// Vectors are 4-dimensional: [animals, programming, database, general].
+/// Vectors are 5-dimensional: [animals, programming, database, general, unrelated].
+/// The 5th "unrelated" dimension is orthogonal to all topic clusters, ensuring
+/// that queries about unrelated topics (quantum physics, medieval history) have
+/// zero cosine similarity with any stored memory.
 /// Cosine similarity between cluster members ≈ 0.95-0.99.
 class EvalEmbeddingProvider implements EmbeddingProvider {
   static const _vectors = <String, List<double>>{
     // Animal cluster
-    'rabbits': [0.95, 0.0, 0.0, 0.05],
-    'cute animals': [0.9, 0.0, 0.0, 0.1],
-    'favourite animal': [0.9, 0.0, 0.0, 0.1],
-    'pets': [0.85, 0.0, 0.0, 0.15],
-    'animals': [0.88, 0.0, 0.0, 0.12],
+    'rabbits': [0.95, 0.0, 0.0, 0.05, 0.0],
+    'rabbit': [0.95, 0.0, 0.0, 0.05, 0.0],
+    'cute animals': [0.9, 0.0, 0.0, 0.1, 0.0],
+    'favourite animal': [0.9, 0.0, 0.0, 0.1, 0.0],
+    'pets': [0.85, 0.0, 0.0, 0.15, 0.0],
+    'animals': [0.88, 0.0, 0.0, 0.12, 0.0],
     // Programming cluster
-    'Dart': [0.0, 0.95, 0.0, 0.05],
-    'programming': [0.0, 0.9, 0.0, 0.1],
-    'Dart language': [0.0, 0.92, 0.0, 0.08],
-    'code patterns': [0.0, 0.8, 0.0, 0.2],
-    'software development': [0.0, 0.85, 0.05, 0.1],
+    'Dart': [0.0, 0.95, 0.0, 0.05, 0.0],
+    'programming': [0.0, 0.9, 0.0, 0.1, 0.0],
+    'Dart language': [0.0, 0.92, 0.0, 0.08, 0.0],
+    'code patterns': [0.0, 0.8, 0.0, 0.2, 0.0],
+    'software development': [0.0, 0.85, 0.05, 0.1, 0.0],
     // Database cluster
-    'PostgreSQL': [0.0, 0.1, 0.9, 0.0],
-    'database': [0.0, 0.1, 0.85, 0.05],
-    'SQL queries': [0.0, 0.15, 0.8, 0.05],
-    'data persistence': [0.0, 0.1, 0.8, 0.1],
+    'PostgreSQL': [0.0, 0.1, 0.9, 0.0, 0.0],
+    'database': [0.0, 0.1, 0.85, 0.05, 0.0],
+    'sqlite': [0.0, 0.1, 0.85, 0.05, 0.0],
+    'SQL queries': [0.0, 0.15, 0.8, 0.05, 0.0],
+    'data persistence': [0.0, 0.1, 0.8, 0.1, 0.0],
     // Mixed / general
-    'project setup': [0.0, 0.4, 0.3, 0.3],
-    'authentication': [0.0, 0.3, 0.2, 0.5],
-    'REST API': [0.0, 0.6, 0.2, 0.2],
-    'HTTP framework': [0.0, 0.65, 0.1, 0.25],
-    // Unrelated (should not match anything in the standard seed)
-    'quantum entanglement': [0.01, 0.01, 0.01, 0.97],
-    'medieval history': [0.01, 0.01, 0.01, 0.97],
+    'project setup': [0.0, 0.4, 0.3, 0.3, 0.0],
+    'authentication': [0.0, 0.3, 0.2, 0.5, 0.0],
+    'REST API': [0.0, 0.6, 0.2, 0.2, 0.0],
+    'HTTP framework': [0.0, 0.65, 0.1, 0.25, 0.0],
+    // Unrelated (orthogonal to all topic clusters)
+    'quantum entanglement': [0.0, 0.0, 0.0, 0.0, 1.0],
+    'medieval history': [0.0, 0.0, 0.0, 0.0, 1.0],
   };
 
   @override
-  int get dimensions => 4;
+  int get dimensions => 5;
 
   @override
   Future<List<double>> embed(String text) async {
@@ -53,8 +58,8 @@ class EvalEmbeddingProvider implements EmbeddingProvider {
         return entry.value;
       }
     }
-    // Default: small general vector (non-zero to avoid cosine edge cases).
-    return [0.05, 0.05, 0.05, 0.85];
+    // Default: general cluster (orthogonal to unrelated).
+    return [0.0, 0.0, 0.0, 1.0, 0.0];
   }
 }
 
@@ -475,9 +480,10 @@ final List<EvalScenario> defaultScenarios = [
         description: 'Off-topic personal fact recalled when directly queried',
       ),
       EvalQuery(
-        query: 'user background',
+        query: 'experience with SQLite and Dart',
         expectedTopFragment: 'Dart well',
-        description: 'Durable user-knowledge fact surfaces for background query',
+        description:
+            'Durable user-knowledge fact surfaces via FTS overlap ("Dart", "SQLite")',
       ),
     ],
   ),
