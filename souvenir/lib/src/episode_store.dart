@@ -13,6 +13,10 @@ abstract class EpisodeStore {
 
   /// Marks the given episodes as consolidated.
   Future<void> markConsolidated(List<Episode> episodes);
+
+  /// Physically delete consolidated episodes older than [olderThan].
+  /// Returns the number of deleted episodes.
+  Future<int> deleteConsolidatedBefore(DateTime olderThan);
 }
 
 /// In-memory episode store for testing and Phase 1.
@@ -37,6 +41,22 @@ class InMemoryEpisodeStore implements EpisodeStore {
     for (final e in episodes) {
       _consolidatedIds.add(e.id);
     }
+  }
+
+  @override
+  Future<int> deleteConsolidatedBefore(DateTime olderThan) async {
+    final before = _episodes.length;
+    _episodes.removeWhere(
+      (e) =>
+          _consolidatedIds.contains(e.id) &&
+          e.timestamp.isBefore(olderThan),
+    );
+    final removed = before - _episodes.length;
+    // Clean up consolidated IDs for removed episodes.
+    _consolidatedIds.removeWhere(
+      (id) => !_episodes.any((e) => e.id == id),
+    );
+    return removed;
   }
 
   /// Number of episodes in the store (testing convenience).

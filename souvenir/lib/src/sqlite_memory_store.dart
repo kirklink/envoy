@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:sqlite3/sqlite3.dart' as sqlite3;
 
 import 'memory_store.dart';
+import 'store_stats.dart';
 import 'stored_memory.dart';
 
 /// SQLite-backed implementation of [MemoryStore].
@@ -70,6 +71,16 @@ class SqliteMemoryStore implements MemoryStore {
         updated_at  TEXT NOT NULL,
         PRIMARY KEY (from_entity, to_entity, relation)
       )
+    ''');
+
+    // Indexes for efficient compaction queries.
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS ${_prefix}idx_memories_status
+        ON $_memories(status)
+    ''');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS ${_prefix}idx_memories_status_updated
+        ON $_memories(status, updated_at)
     ''');
   }
 
@@ -495,6 +506,102 @@ class SqliteMemoryStore implements MemoryStore {
       [sessionId, component],
     );
     return result.map((row) => _rowToStoredMemory(Map.of(row))).toList();
+  }
+
+  // ── Compaction operations ────────────────────────────────────────────
+
+  @override
+  Future<int> deleteTombstoned(MemoryStatus status, DateTime olderThan) async {
+    assert(status != MemoryStatus.active);
+    _db.execute(
+      'DELETE FROM $_memories WHERE status = ? AND updated_at < ?',
+      [status.name, olderThan.toUtc().toIso8601String()],
+    );
+    return _db.updatedRows;
+  }
+
+  @override
+  Future<int> deleteOrphanedEntities() async {
+    _db.execute('''
+      DELETE FROM $_entities WHERE id NOT IN (
+        SELECT DISTINCT je.value
+        FROM $_memories m, json_each(m.entity_ids) je
+        WHERE m.status = 'active'
+      )
+    ''');
+    return _db.updatedRows;
+  }
+
+  @override
+  Future<int> deleteOrphanedRelationships() async {
+    _db.execute('''
+      DELETE FROM $_relationships
+      WHERE from_entity NOT IN (SELECT id FROM $_entities)
+         OR to_entity NOT IN (SELECT id FROM $_entities)
+    ''');
+    return _db.updatedRows;
+  }
+
+  @override
+  Future<StoreStats> stats() async {
+    // Status breakdown.
+    final statusRows = _db.select(
+      'SELECT status, COUNT(*) as cnt FROM $_memories GROUP BY status',
+    );
+    var active = 0, expired = 0, superseded = 0, decayed = 0;
+    for (final row in statusRows) {
+      final count = row['cnt'] as int;
+      switch (row['status'] as String) {
+        case 'active':
+          active = count;
+        case 'expired':
+          expired = count;
+        case 'superseded':
+          superseded = count;
+        case 'decayed':
+          decayed = count;
+      }
+    }
+
+    // Embedded count.
+    final embeddedRow = _db.select(
+      'SELECT COUNT(*) as cnt FROM $_memories '
+      "WHERE status = 'active' AND embedding IS NOT NULL",
+    );
+    final embedded = embeddedRow.first['cnt'] as int;
+
+    // Entity and relationship counts.
+    final entityRow = _db.select(
+      'SELECT COUNT(*) as cnt FROM $_entities',
+    );
+    final entityCount = entityRow.first['cnt'] as int;
+
+    final relRow = _db.select(
+      'SELECT COUNT(*) as cnt FROM $_relationships',
+    );
+    final relCount = relRow.first['cnt'] as int;
+
+    // Active by component.
+    final compRows = _db.select(
+      'SELECT component, COUNT(*) as cnt FROM $_memories '
+      "WHERE status = 'active' GROUP BY component",
+    );
+    final byComponent = <String, int>{};
+    for (final row in compRows) {
+      byComponent[row['component'] as String] = row['cnt'] as int;
+    }
+
+    return StoreStats(
+      totalMemories: active + expired + superseded + decayed,
+      activeMemories: active,
+      expiredMemories: expired,
+      supersededMemories: superseded,
+      decayedMemories: decayed,
+      embeddedMemories: embedded,
+      entities: entityCount,
+      relationships: relCount,
+      activeByComponent: byComponent,
+    );
   }
 
   @override

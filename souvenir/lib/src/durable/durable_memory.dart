@@ -85,6 +85,7 @@ class DurableMemory implements MemoryComponent {
       component: name,
       inactivePeriod: _config.decayInactivePeriod,
       decayRate: _config.importanceDecayRate,
+      floorThreshold: _config.decayFloorThreshold,
     );
 
     if (episodes.isEmpty) {

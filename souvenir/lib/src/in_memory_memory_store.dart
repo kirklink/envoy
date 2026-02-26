@@ -1,4 +1,5 @@
 import 'memory_store.dart';
+import 'store_stats.dart';
 import 'stored_memory.dart';
 
 /// In-memory implementation of [MemoryStore].
@@ -400,6 +401,76 @@ class InMemoryMemoryStore implements MemoryStore {
               m.component == component,
         )
         .toList();
+  }
+
+  // ── Compaction operations ────────────────────────────────────────────
+
+  @override
+  Future<int> deleteTombstoned(MemoryStatus status, DateTime olderThan) async {
+    assert(status != MemoryStatus.active);
+    final before = _memories.length;
+    _memories.removeWhere(
+      (m) => m.status == status && m.updatedAt.isBefore(olderThan),
+    );
+    return before - _memories.length;
+  }
+
+  @override
+  Future<int> deleteOrphanedEntities() async {
+    final referencedIds = <String>{};
+    for (final m in _memories) {
+      if (m.isActive) referencedIds.addAll(m.entityIds);
+    }
+    final before = _entities.length;
+    _entities.removeWhere((e) => !referencedIds.contains(e.id));
+    return before - _entities.length;
+  }
+
+  @override
+  Future<int> deleteOrphanedRelationships() async {
+    final entityIds = _entities.map((e) => e.id).toSet();
+    final before = _relationships.length;
+    _relationships.removeWhere(
+      (r) =>
+          !entityIds.contains(r.fromEntity) ||
+          !entityIds.contains(r.toEntity),
+    );
+    return before - _relationships.length;
+  }
+
+  @override
+  Future<StoreStats> stats() async {
+    var active = 0, expired = 0, superseded = 0, decayed = 0, embedded = 0;
+    final byComponent = <String, int>{};
+
+    for (final m in _memories) {
+      switch (m.status) {
+        case MemoryStatus.active:
+          active++;
+          if (m.isActive) {
+            byComponent[m.component] = (byComponent[m.component] ?? 0) + 1;
+          }
+          if (m.embedding != null) embedded++;
+        case MemoryStatus.expired:
+          expired++;
+        case MemoryStatus.superseded:
+          superseded++;
+        case MemoryStatus.decayed:
+          decayed++;
+      }
+    }
+
+    return StoreStats(
+      totalMemories: _memories.length,
+      activeMemories: active,
+      expiredMemories: expired,
+      supersededMemories: superseded,
+      decayedMemories: decayed,
+      embeddedMemories: embedded,
+      entities: _entities.length,
+      relationships: _relationships.length,
+      activeByComponent: byComponent,
+    );
   }
 
   @override

@@ -4,6 +4,7 @@ import 'embedding_provider.dart';
 import 'memory_store.dart';
 import 'stored_memory.dart';
 import 'tokenizer.dart';
+import 'vector_math.dart';
 
 /// Configuration for the unified recall pipeline.
 ///
@@ -144,7 +145,7 @@ class UnifiedRecall {
       final queryVec = await _embeddings!.embed(query);
       final embedded = await _store.loadActiveWithEmbeddings();
       for (final mem in embedded) {
-        final sim = _cosineSimilarity(queryVec, mem.embedding!);
+        final sim = cosineSimilarity(queryVec, mem.embedding!);
         if (sim > 0) {
           _getOrCreate(candidates, mem).vectorScore = sim;
         }
@@ -281,18 +282,6 @@ class UnifiedRecall {
     );
   }
 
-  static double _cosineSimilarity(List<double> a, List<double> b) {
-    if (a.length != b.length) return 0;
-    var dot = 0.0, na = 0.0, nb = 0.0;
-    for (var i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      na += a[i] * a[i];
-      nb += b[i] * b[i];
-    }
-    final denom = na * nb;
-    if (denom <= 0) return 0;
-    return dot / math.sqrt(denom);
-  }
 }
 
 class _Candidate {

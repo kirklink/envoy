@@ -52,6 +52,12 @@ class CellarEpisodeStore implements EpisodeStore {
         .toList());
   }
 
+  @override
+  Future<int> deleteConsolidatedBefore(DateTime olderThan) async {
+    final iso = olderThan.toUtc().toIso8601String();
+    return _svc.deleteWhere('consolidated = true AND timestamp < "$iso"');
+  }
+
   /// Total number of episodes (testing convenience).
   int get count => _svc.list(limit: 0).total;
 

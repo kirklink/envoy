@@ -1,3 +1,4 @@
+import 'store_stats.dart';
 import 'stored_memory.dart';
 
 /// A memory with its BM25 relevance score from full-text search.
@@ -118,6 +119,26 @@ abstract class MemoryStore {
     String sessionId,
     String component,
   );
+
+  // ── Compaction operations ─────────────────────────────────────────────
+
+  /// Physically delete memories with the given [status] whose
+  /// [updatedAt] is older than [olderThan].
+  ///
+  /// Only non-active statuses are valid (expired, superseded, decayed).
+  /// Returns the number of deleted rows.
+  Future<int> deleteTombstoned(MemoryStatus status, DateTime olderThan);
+
+  /// Physically delete entities not referenced by any active memory.
+  /// Returns the number of deleted entities.
+  Future<int> deleteOrphanedEntities();
+
+  /// Physically delete relationships where either entity no longer exists.
+  /// Returns the number of deleted relationships.
+  Future<int> deleteOrphanedRelationships();
+
+  /// Return storage statistics for observability.
+  Future<StoreStats> stats();
 
   /// Cleanup.
   Future<void> close();

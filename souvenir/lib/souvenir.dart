@@ -29,6 +29,11 @@ export 'src/task/task_memory_config.dart';
 export 'src/environmental/environmental_memory.dart';
 export 'src/environmental/environmental_memory_config.dart';
 
+// Compaction.
+export 'src/compaction_config.dart';
+export 'src/compaction_report.dart';
+export 'src/store_stats.dart';
+
 // Cellar integration.
 export 'src/cellar_episode_store.dart';
 export 'src/souvenir_cellar.dart';
