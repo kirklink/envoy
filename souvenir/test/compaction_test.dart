@@ -1,9 +1,15 @@
+import 'dart:convert';
+import 'dart:math' as math;
+
 import 'package:souvenir/src/compaction_config.dart';
+import 'package:souvenir/src/durable/durable_memory.dart';
+import 'package:souvenir/src/durable/durable_memory_config.dart';
 import 'package:souvenir/src/embedding_provider.dart';
 import 'package:souvenir/src/engine.dart';
 import 'package:souvenir/src/episode_store.dart';
 import 'package:souvenir/src/in_memory_memory_store.dart';
 import 'package:souvenir/src/models/episode.dart';
+import 'package:souvenir/src/recall.dart';
 import 'package:souvenir/src/stored_memory.dart';
 import 'package:souvenir/src/vector_math.dart';
 import 'package:test/test.dart';
@@ -760,6 +766,446 @@ void main() {
 
     test('zero vectors return 0.0', () {
       expect(cosineSimilarity([0.0, 0.0], [0.0, 0.0]), 0.0);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Post-compaction recall consistency
+  // ══════════════════════════════════════════════════════════════════════════
+
+  group('Post-compaction recall', () {
+    test('recall returns correct results after tombstone pruning', () async {
+      final store = InMemoryMemoryStore();
+      await store.initialize();
+
+      // Active memory.
+      await store.insert(StoredMemory(
+        content: 'User prefers Dart for backend development',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.8,
+      ));
+      // Expired memory (should not appear in recall, then gets pruned).
+      await store.insert(StoredMemory(
+        content: 'Old task about Dart CLI tooling',
+        component: 'task',
+        category: 'goal',
+        status: MemoryStatus.expired,
+        updatedAt: _daysAgo(10),
+      ));
+
+      final engine = Souvenir(
+        components: [],
+        store: store,
+        recallConfig: RecallConfig(),
+      );
+      await engine.initialize();
+
+      // Recall before compaction.
+      var result = await engine.recall('Dart');
+      expect(result.items, hasLength(1));
+      expect(result.items.first.content, contains('backend'));
+
+      // Compact — prunes the expired tombstone.
+      final report = await engine.compact();
+      expect(report.expiredPruned, 1);
+
+      // Recall after compaction — same result, no ghost entries.
+      result = await engine.recall('Dart');
+      expect(result.items, hasLength(1));
+      expect(result.items.first.content, contains('backend'));
+    });
+
+    test('recall works after entity graph pruning', () async {
+      final store = InMemoryMemoryStore();
+      await store.initialize();
+
+      final dartEntity = Entity(name: 'Dart', type: 'language');
+      final orphanEntity = Entity(name: 'OldThing', type: 'concept');
+      await store.upsertEntity(dartEntity);
+      await store.upsertEntity(orphanEntity);
+      await store.upsertRelationship(Relationship(
+        fromEntity: dartEntity.id,
+        toEntity: orphanEntity.id,
+        relation: 'related_to',
+      ));
+
+      await store.insert(StoredMemory(
+        content: 'Dart is the primary programming language',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.9,
+        entityIds: [dartEntity.id],
+      ));
+
+      final engine = Souvenir(components: [], store: store);
+      await engine.initialize();
+
+      // Compact prunes orphanEntity and its relationship.
+      final report = await engine.compact();
+      expect(report.entitiesRemoved, 1);
+      expect(report.relationshipsRemoved, 1);
+
+      // Recall still works — entity graph signal still present for Dart.
+      final result = await engine.recall('Dart');
+      expect(result.items, hasLength(1));
+      expect(result.items.first.entitySignal, greaterThan(0));
+    });
+
+    test('recall works after near-duplicate compaction', () async {
+      final store = InMemoryMemoryStore();
+      await store.initialize();
+
+      final vec = [0.9, 0.1, 0.0, 0.0];
+      await store.insert(StoredMemory(
+        content: 'User prefers Dart for backend work',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.8,
+        embedding: vec,
+      ));
+      await store.insert(StoredMemory(
+        content: 'User likes Dart for server-side code',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.6,
+        embedding: vec,
+      ));
+
+      final engine = Souvenir(
+        components: [],
+        store: store,
+        embeddings: _FakeEmbeddings({'dart': vec}),
+      );
+      await engine.initialize();
+
+      // Before compaction: 2 results.
+      var result = await engine.recall('Dart');
+      expect(result.items, hasLength(2));
+
+      // Compact merges duplicates.
+      final report = await engine.compact();
+      expect(report.duplicatesMerged, 1);
+
+      // After compaction: 1 result (the survivor).
+      result = await engine.recall('Dart');
+      expect(result.items, hasLength(1));
+      expect(result.items.first.content, contains('backend'));
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Durable memory decay floor threshold
+  // ══════════════════════════════════════════════════════════════════════════
+
+  group('Durable decay floor', () {
+    test('marks low-importance durable memories as decayed', () async {
+      final store = InMemoryMemoryStore();
+      await store.initialize();
+
+      // Insert a durable memory with low importance, aged past decay period.
+      final old = DateTime.now().toUtc().subtract(const Duration(days: 100));
+      await store.insert(StoredMemory(
+        content: 'Very old low importance durable fact',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.04, // Below 0.05 threshold after any decay.
+        updatedAt: old,
+      ));
+
+      final durable = DurableMemory(
+        store: store,
+        config: DurableMemoryConfig(
+          importanceDecayRate: 0.97,
+          decayInactivePeriod: const Duration(days: 90),
+          decayFloorThreshold: 0.05,
+        ),
+      );
+      await durable.initialize();
+
+      // Consolidate with empty episodes — only decay runs.
+      final llm = (String s, String u) async => jsonEncode({
+            'facts': <dynamic>[],
+            'relationships': <dynamic>[],
+          });
+      final report = await durable.consolidate([], llm);
+
+      // 0.04 * 0.97 = 0.0388 < 0.05 → marked decayed.
+      expect(report.itemsDecayed, 1);
+      expect(await store.activeItemCount('durable'), 0);
+    });
+
+    test('preserves durable memories above floor', () async {
+      final store = InMemoryMemoryStore();
+      await store.initialize();
+
+      final old = DateTime.now().toUtc().subtract(const Duration(days: 100));
+      await store.insert(StoredMemory(
+        content: 'Important durable fact stays active',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.5,
+        updatedAt: old,
+      ));
+
+      final durable = DurableMemory(
+        store: store,
+        config: DurableMemoryConfig(
+          importanceDecayRate: 0.97,
+          decayInactivePeriod: const Duration(days: 90),
+          decayFloorThreshold: 0.05,
+        ),
+      );
+      await durable.initialize();
+
+      final llm = (String s, String u) async => jsonEncode({
+            'facts': <dynamic>[],
+            'relationships': <dynamic>[],
+          });
+      final report = await durable.consolidate([], llm);
+
+      // 0.5 * 0.97 = 0.485 > 0.05 → stays active.
+      expect(report.itemsDecayed, 0);
+      expect(await store.activeItemCount('durable'), 1);
+    });
+
+    test('null floor disables decay marking', () async {
+      final store = InMemoryMemoryStore();
+      await store.initialize();
+
+      final old = DateTime.now().toUtc().subtract(const Duration(days: 100));
+      await store.insert(StoredMemory(
+        content: 'Tiny importance but no floor check',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.01,
+        updatedAt: old,
+      ));
+
+      final durable = DurableMemory(
+        store: store,
+        config: DurableMemoryConfig(
+          importanceDecayRate: 0.97,
+          decayInactivePeriod: const Duration(days: 90),
+          decayFloorThreshold: null, // Disabled.
+        ),
+      );
+      await durable.initialize();
+
+      final llm = (String s, String u) async => jsonEncode({
+            'facts': <dynamic>[],
+            'relationships': <dynamic>[],
+          });
+      final report = await durable.consolidate([], llm);
+
+      // No floor → never marked decayed, just decayed in importance.
+      expect(report.itemsDecayed, 0);
+      expect(await store.activeItemCount('durable'), 1);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Scale: near-duplicate detection under volume
+  // ══════════════════════════════════════════════════════════════════════════
+
+  group('Scale', () {
+    test('near-duplicate detection handles 200 memories', () async {
+      final store = InMemoryMemoryStore();
+      await store.initialize();
+
+      final rng = math.Random(42);
+
+      // Generate 200 memories with random 8-dim embeddings.
+      for (var i = 0; i < 200; i++) {
+        final vec = List.generate(8, (_) => rng.nextDouble());
+        await store.insert(StoredMemory(
+          content: 'Memory item number $i about various topics',
+          component: 'durable',
+          category: 'fact',
+          importance: 0.3 + rng.nextDouble() * 0.7,
+          embedding: vec,
+        ));
+      }
+
+      final engine = Souvenir(
+        components: [],
+        store: store,
+        embeddings: _FakeEmbeddings({}),
+        compactionConfig: CompactionConfig(deduplicationThreshold: 0.99),
+      );
+      await engine.initialize();
+
+      // Should complete without error in reasonable time.
+      final stopwatch = Stopwatch()..start();
+      final report = await engine.compact();
+      stopwatch.stop();
+
+      // With random vectors and 0.99 threshold, very few (if any) merges.
+      expect(report.duplicatesMerged, lessThan(10));
+      // Should complete in under 5 seconds for 200 items (O(n^2) = 40k pairs).
+      expect(stopwatch.elapsedMilliseconds, lessThan(5000));
+
+      final stats = await engine.stats();
+      expect(
+        stats.activeMemories,
+        200 - report.duplicatesMerged,
+      );
+    });
+
+    test('duplicate cluster collapses correctly', () async {
+      final store = InMemoryMemoryStore();
+      await store.initialize();
+
+      // 10 nearly identical memories — all should collapse to 1 survivor.
+      final vec = [0.9, 0.1, 0.0, 0.0];
+      for (var i = 0; i < 10; i++) {
+        await store.insert(StoredMemory(
+          content: 'User prefers Dart variant $i',
+          component: 'durable',
+          category: 'fact',
+          importance: 0.5 + i * 0.05,
+          embedding: vec,
+        ));
+      }
+
+      final engine = Souvenir(
+        components: [],
+        store: store,
+        embeddings: _FakeEmbeddings({}),
+      );
+      await engine.initialize();
+
+      final report = await engine.compact();
+      expect(report.duplicatesMerged, 9);
+
+      final stats = await engine.stats();
+      expect(stats.activeMemories, 1);
+
+      // Survivor should be the highest-importance one (0.5 + 9*0.05 = 0.95).
+      final active = await store.loadActiveWithEmbeddings();
+      expect(active.first.importance, closeTo(0.95, 0.01));
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Transitive duplicate chains
+  // ══════════════════════════════════════════════════════════════════════════
+
+  group('Transitive chains', () {
+    test('A~B and B~C but not A~C: only direct pairs merge', () async {
+      final store = InMemoryMemoryStore();
+      await store.initialize();
+
+      // Three vectors at 20° rotations: adjacent pairs similar, endpoints not.
+      // A = [1.0, 0.0, 0, 0]
+      // B = [cos(20°), sin(20°), 0, 0]  (sim(A,B) ≈ 0.94)
+      // C = [cos(40°), sin(40°), 0, 0]  (sim(B,C) ≈ 0.94, sim(A,C) ≈ 0.77)
+      final vecA = [1.0, 0.0, 0.0, 0.0];
+      final vecB = [0.9397, 0.342, 0.0, 0.0];
+      final vecC = [0.766, 0.6428, 0.0, 0.0];
+
+      // Verify similarities.
+      expect(cosineSimilarity(vecA, vecB), greaterThan(0.92));
+      expect(cosineSimilarity(vecB, vecC), greaterThan(0.92));
+      expect(cosineSimilarity(vecA, vecC), lessThan(0.92));
+
+      final memA = StoredMemory(
+        content: 'Memory A about topic alpha',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.9, // Highest — will survive.
+        embedding: vecA,
+      );
+      final memB = StoredMemory(
+        content: 'Memory B about topic beta',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.5,
+        embedding: vecB,
+      );
+      final memC = StoredMemory(
+        content: 'Memory C about topic gamma',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.7,
+        embedding: vecC,
+      );
+      await store.insert(memA);
+      await store.insert(memB);
+      await store.insert(memC);
+
+      final engine = Souvenir(
+        components: [],
+        store: store,
+        embeddings: _FakeEmbeddings({}),
+      );
+      await engine.initialize();
+
+      final report = await engine.compact();
+
+      // Sorted by score: A(0.9), C(0.7), B(0.5).
+      // A vs C: sim ≈ 0.50 < 0.92 → no merge.
+      // A vs B: sim ≈ 0.93 > 0.92 → B superseded by A.
+      // C vs B: B already superseded, skip.
+      // Result: 1 merge (B into A), C survives independently.
+      expect(report.duplicatesMerged, 1);
+
+      final stats = await engine.stats();
+      expect(stats.activeMemories, 2);
+
+      // A and C should be the survivors.
+      final active = await store.loadActiveWithEmbeddings();
+      final activeIds = active.map((m) => m.id).toSet();
+      expect(activeIds, contains(memA.id));
+      expect(activeIds, contains(memC.id));
+      expect(activeIds, isNot(contains(memB.id)));
+    });
+
+    test('chain does not cascade: superseded items are skipped', () async {
+      final store = InMemoryMemoryStore();
+      await store.initialize();
+
+      // All identical vectors — forms a full clique.
+      final vec = [1.0, 0.0, 0.0, 0.0];
+      final mem1 = StoredMemory(
+        content: 'Highest importance memory survives',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.9,
+        embedding: vec,
+      );
+      final mem2 = StoredMemory(
+        content: 'Medium importance gets superseded',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.6,
+        embedding: vec,
+      );
+      final mem3 = StoredMemory(
+        content: 'Low importance gets superseded',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.3,
+        embedding: vec,
+      );
+      await store.insert(mem1);
+      await store.insert(mem2);
+      await store.insert(mem3);
+
+      final engine = Souvenir(
+        components: [],
+        store: store,
+        embeddings: _FakeEmbeddings({}),
+      );
+      await engine.initialize();
+
+      final report = await engine.compact();
+      // mem1 survives, mem2 and mem3 both superseded.
+      expect(report.duplicatesMerged, 2);
+
+      final active = await store.loadActiveWithEmbeddings();
+      expect(active, hasLength(1));
+      expect(active.first.id, mem1.id);
     });
   });
 }

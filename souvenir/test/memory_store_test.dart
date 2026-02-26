@@ -678,4 +678,215 @@ void _memoryStoreTests(Future<MemoryStore> Function() createStore) {
       expect(results.first.sourceEpisodeIds, equals(['ep1', 'ep2']));
     });
   });
+
+  // ── Compaction operations ───────────────────────────────────────────
+
+  group('compaction', () {
+    DateTime daysAgo(int days) =>
+        DateTime.now().toUtc().subtract(Duration(days: days));
+
+    test('deleteTombstoned removes expired past cutoff', () async {
+      await store.insert(StoredMemory(
+        content: 'Old expired memory for deletion',
+        component: 'task',
+        category: 'goal',
+        status: MemoryStatus.expired,
+        updatedAt: daysAgo(10),
+      ));
+      await store.insert(StoredMemory(
+        content: 'Recent expired memory survives',
+        component: 'task',
+        category: 'goal',
+        status: MemoryStatus.expired,
+        updatedAt: daysAgo(3),
+      ));
+      await store.insert(StoredMemory(
+        content: 'Active memory is never touched',
+        component: 'task',
+        category: 'goal',
+        updatedAt: daysAgo(100),
+      ));
+
+      final deleted = await store.deleteTombstoned(
+        MemoryStatus.expired,
+        daysAgo(7),
+      );
+      expect(deleted, 1);
+
+      // FTS should still work for survivors.
+      final fts = await store.searchFts('memory');
+      expect(fts, hasLength(1));
+      expect(fts.first.memory.content, contains('Active'));
+    });
+
+    test('deleteTombstoned removes superseded past cutoff', () async {
+      await store.insert(StoredMemory(
+        content: 'Old superseded memory gone',
+        component: 'durable',
+        category: 'fact',
+        status: MemoryStatus.superseded,
+        updatedAt: daysAgo(40),
+      ));
+
+      final deleted = await store.deleteTombstoned(
+        MemoryStatus.superseded,
+        daysAgo(30),
+      );
+      expect(deleted, 1);
+    });
+
+    test('deleteTombstoned removes decayed past cutoff', () async {
+      await store.insert(StoredMemory(
+        content: 'Old decayed memory gone now',
+        component: 'environmental',
+        category: 'capability',
+        status: MemoryStatus.decayed,
+        updatedAt: daysAgo(20),
+      ));
+
+      final deleted = await store.deleteTombstoned(
+        MemoryStatus.decayed,
+        daysAgo(14),
+      );
+      expect(deleted, 1);
+    });
+
+    test('deleteOrphanedEntities removes unreferenced', () async {
+      final referenced = Entity(name: 'Dart', type: 'language');
+      final orphaned = Entity(name: 'Forgotten', type: 'concept');
+      await store.upsertEntity(referenced);
+      await store.upsertEntity(orphaned);
+
+      await store.insert(StoredMemory(
+        content: 'Active memory references Dart language',
+        component: 'durable',
+        category: 'fact',
+        entityIds: [referenced.id],
+      ));
+
+      final removed = await store.deleteOrphanedEntities();
+      expect(removed, 1);
+
+      final surviving = await store.findEntitiesByName('Dart');
+      expect(surviving, hasLength(1));
+      final gone = await store.findEntitiesByName('Forgotten');
+      expect(gone, isEmpty);
+    });
+
+    test('deleteOrphanedRelationships removes dangling refs', () async {
+      final e1 = Entity(name: 'Dart', type: 'language');
+      final e2 = Entity(name: 'Flutter', type: 'framework');
+      await store.upsertEntity(e1);
+      await store.upsertEntity(e2);
+
+      await store.upsertRelationship(Relationship(
+        fromEntity: e1.id,
+        toEntity: e2.id,
+        relation: 'used_by',
+      ));
+      // Relationship referencing a non-existent entity.
+      await store.upsertRelationship(Relationship(
+        fromEntity: e1.id,
+        toEntity: 'nonexistent_entity_id',
+        relation: 'related_to',
+      ));
+
+      final removed = await store.deleteOrphanedRelationships();
+      expect(removed, 1);
+
+      final surviving = await store.findRelationshipsForEntity(e1.id);
+      expect(surviving, hasLength(1));
+      expect(surviving.first.toEntity, e2.id);
+    });
+
+    test('stats returns correct breakdown', () async {
+      await store.insert(StoredMemory(
+        content: 'Active task memory for stats',
+        component: 'task',
+        category: 'goal',
+      ));
+      await store.insert(StoredMemory(
+        content: 'Active durable memory for stats',
+        component: 'durable',
+        category: 'fact',
+      ));
+      await store.insert(StoredMemory(
+        content: 'Embedded active durable memory',
+        component: 'durable',
+        category: 'fact',
+        embedding: [0.1, 0.2, 0.3],
+      ));
+      await store.insert(StoredMemory(
+        content: 'Expired memory for stats count',
+        component: 'task',
+        category: 'goal',
+        status: MemoryStatus.expired,
+      ));
+      await store.insert(StoredMemory(
+        content: 'Superseded memory for stats count',
+        component: 'durable',
+        category: 'fact',
+        status: MemoryStatus.superseded,
+      ));
+      await store.insert(StoredMemory(
+        content: 'Decayed memory for stats count',
+        component: 'environmental',
+        category: 'capability',
+        status: MemoryStatus.decayed,
+      ));
+
+      await store.upsertEntity(Entity(name: 'Dart', type: 'language'));
+      await store.upsertRelationship(Relationship(
+        fromEntity: 'a',
+        toEntity: 'b',
+        relation: 'uses',
+      ));
+
+      final s = await store.stats();
+      expect(s.totalMemories, 6);
+      expect(s.activeMemories, 3);
+      expect(s.expiredMemories, 1);
+      expect(s.supersededMemories, 1);
+      expect(s.decayedMemories, 1);
+      expect(s.embeddedMemories, 1);
+      expect(s.entities, 1);
+      expect(s.relationships, 1);
+      expect(s.activeByComponent['task'], 1);
+      expect(s.activeByComponent['durable'], 2);
+    });
+
+    test('FTS stays consistent after tombstone deletion', () async {
+      final mem = StoredMemory(
+        content: 'Quantum physics breakthrough discovery',
+        component: 'durable',
+        category: 'fact',
+        status: MemoryStatus.expired,
+        updatedAt: daysAgo(10),
+      );
+      await store.insert(mem);
+
+      // Should not appear in FTS (expired).
+      var results = await store.searchFts('quantum physics');
+      expect(results, isEmpty);
+
+      // Delete the tombstone.
+      await store.deleteTombstoned(MemoryStatus.expired, daysAgo(7));
+
+      // Still not in FTS after physical deletion.
+      results = await store.searchFts('quantum physics');
+      expect(results, isEmpty);
+
+      // Insert a new active memory with similar content.
+      await store.insert(StoredMemory(
+        content: 'Quantum physics experiment results',
+        component: 'durable',
+        category: 'fact',
+      ));
+
+      // New one should be findable.
+      results = await store.searchFts('quantum physics');
+      expect(results, hasLength(1));
+      expect(results.first.memory.content, contains('experiment'));
+    });
+  });
 }
