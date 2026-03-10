@@ -8,7 +8,7 @@ environment:
 
 dependencies:
   cellar:
-    path: ../../cellar
+    path: ../../cellar/cellar
   ulid: ^2.0.1
 
 dev_dependencies:
