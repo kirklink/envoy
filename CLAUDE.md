@@ -5,7 +5,6 @@
 When modifying this package, keep all package docs current:
 - `CLAUDE.md` — update if internals, architecture, or file structure change
 - `docs/guide.md` — update if public API surface changes
-- `docs/skill/SKILL.md` — update if guide sections or trigger keywords change
 - `README.md` — update if the package purpose or quick start changes
 
 Lightweight, opinionated agentic framework where an LLM can extend its own
