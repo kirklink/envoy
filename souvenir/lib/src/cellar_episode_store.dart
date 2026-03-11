@@ -19,18 +19,16 @@ class CellarEpisodeStore implements EpisodeStore {
   Future<void> insert(List<Episode> episodes) async {
     if (episodes.isEmpty) return;
     _svc.batch(episodes
-        .map((ep) => BatchCreate(
-              {
-                'session_id': ep.sessionId,
-                'timestamp': ep.timestamp.toUtc(),
-                'type': ep.type.name,
-                'content': ep.content,
-                'importance': ep.importance,
-                'access_count': ep.accessCount,
-                'consolidated': ep.consolidated,
-              },
-              id: ep.id,
-            ))
+        .map((ep) => BatchCreate({
+              'id': ep.id,
+              'session_id': ep.sessionId,
+              'timestamp': ep.timestamp.toUtc(),
+              'type': ep.type.name,
+              'content': ep.content,
+              'importance': ep.importance,
+              'access_count': ep.accessCount,
+              'consolidated': ep.consolidated,
+            }))
         .toList());
   }
 
@@ -55,7 +53,7 @@ class CellarEpisodeStore implements EpisodeStore {
   @override
   Future<int> deleteConsolidatedBefore(DateTime olderThan) async {
     final iso = olderThan.toUtc().toIso8601String();
-    return _svc.deleteWhere('consolidated = true AND timestamp < "$iso"');
+    return _svc.deleteWhere(filter: 'consolidated = true AND timestamp < "$iso"');
   }
 
   /// Total number of episodes (testing convenience).
@@ -67,7 +65,7 @@ class CellarEpisodeStore implements EpisodeStore {
 
   static Episode _recordToEpisode(Record record) {
     return Episode(
-      id: record.id,
+      id: record.pk,
       sessionId: record['session_id'] as String,
       timestamp: record['timestamp'] as DateTime,
       type: EpisodeType.values.firstWhere(

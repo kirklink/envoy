@@ -98,17 +98,24 @@ class SouvenirCellar {
   // ── Collection schema definitions ──────────────────────────────────────
 
   /// Episode collection schema.
-  static Collection episodesCollection(String prefix) => Collection(
+  static CellarCollection episodesCollection(String prefix) =>
+      CellarCollection(
         name: '${prefix}episodes',
+        primaryKey: 'id',
         fields: [
-          Field.text('session_id'),
-          Field.datetime('timestamp'),
-          Field.text('type'),
-          Field.text('content', fts: true),
-          Field.real('importance', defaultValue: 0.5),
-          Field.int('access_count', defaultValue: 0),
-          Field.bool('consolidated', defaultValue: false),
-          Field.datetime('last_accessed', nullable: true),
+          const CellarField.text('id'),
+          const CellarField.text('session_id'),
+          const CellarField.datetime('timestamp'),
+          const CellarField.text('type'),
+          const CellarField.text('content', fts: true),
+          const CellarField.real('importance', defaultValue: 0.5),
+          const CellarField.int('access_count', defaultValue: 0),
+          const CellarField.bool('consolidated', defaultValue: false),
+          const CellarField.datetime('last_accessed', nullable: true),
+          const CellarField.datetime('created_at',
+              defaultValue: "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"),
+          const CellarField.datetime('updated_at',
+              defaultValue: "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"),
         ],
       );
 }
