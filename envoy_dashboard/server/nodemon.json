@@ -1,0 +1,12 @@
+{
+    "verbose": false,
+    "watch": [
+        "bin/",
+        "lib/"
+    ],
+    "execMap": {
+        "dart": "dart"
+    },
+    "ext": "dart",
+    "exec": "dart --disable-analytics && dart run bin/server.dart"
+}

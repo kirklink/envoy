@@ -1,0 +1,15 @@
+name: envoy_dashboard_server
+publish_to: none
+description: Envoy agent dashboard — Swoop server.
+version: 0.1.0
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  swoop:
+    path: ../../../blanket/blanket
+  envoy:
+    path: ../../envoy
+  envoy_tools:
+    path: ../../envoy_tools
