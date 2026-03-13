@@ -8,7 +8,7 @@ environment:
 
 dependencies:
   swoop:
-    path: ../../../blanket/blanket
+    path: ../../../swoop/swoop
   envoy:
     path: ../../envoy
   envoy_tools:

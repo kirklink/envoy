@@ -8,7 +8,7 @@ environment:
 
 dependencies:
   swoop:
-    path: ../../../blanket/blanket
+    path: ../../../swoop/swoop
   web: ^1.1.0
 
 dev_dependencies:
