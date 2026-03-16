@@ -280,7 +280,7 @@ web.HTMLElement _responseCard(DashboardController ctrl) {
       container.appendChild(card(
         title: 'Agent Response',
         children: [
-          pre(ctrl.response.value!, className: 'whitespace-pre-wrap text-sm'),
+          pre(ctrl.response.value!, classes: 'whitespace-pre-wrap text-sm'),
           keyValue(entries: [
             ('Iterations', text(() => ctrl.iterations.value.toString())),
             ('Input tokens',
@@ -410,11 +410,11 @@ web.HTMLElement chatPage(DashboardController ctrl) {
     }
   }
 
-  return stack(className: 'h-full', children: [
-    row(gap: 'gap-3', className: 'items-center', children: [
+  return stack(classes: 'h-full', children: [
+    row(gap: 'gap-3', classes: 'items-center', children: [
       label('Model',
-          className: 'text-sm font-medium text-gray-600 dark:text-gray-400'),
-      div(className: 'w-64', children: [
+          classes: 'text-sm font-medium text-gray-600 dark:text-gray-400'),
+      div(classes: 'w-64', children: [
         selectInput(
           value: ctrl.model,
           options: [
@@ -426,7 +426,7 @@ web.HTMLElement chatPage(DashboardController ctrl) {
       ]),
     ]),
     div(
-      className: 'flex-1 min-h-0',
+      classes: 'flex-1 min-h-0',
       children: [
         chat(
           messages: messages,
@@ -434,7 +434,7 @@ web.HTMLElement chatPage(DashboardController ctrl) {
           placeholder: 'Chat with Claude...',
           showTimestamps: true,
           onSend: sendMessage,
-          className: 'h-full rounded-lg border border-gray-200 dark:border-gray-700 '
+          classes: 'h-full rounded-lg border border-gray-200 dark:border-gray-700 '
               'bg-white dark:bg-gray-900',
         ),
       ],
@@ -448,7 +448,7 @@ web.HTMLElement chatPage(DashboardController ctrl) {
 
 web.HTMLElement _darkModeToggle() {
   final container = div(
-    className: 'cursor-pointer text-gray-600 dark:text-gray-400 '
+    classes: 'cursor-pointer text-gray-600 dark:text-gray-400 '
         'hover:text-gray-900 dark:hover:text-gray-100',
   );
   final sunIcon = icon(AppIcon.sun, size: 'h-5 w-5');
@@ -484,14 +484,14 @@ void main() {
     navActions: [_darkModeToggle()],
     sidebar: stack(gap: 'gap-1', children: [
       label('Navigation',
-          className:
+          classes:
               'text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2'),
       link('Dashboard', href: '/'),
       link('Chat', href: '/chat'),
       link('Logs', href: '/logs'),
-      divider(className: 'my-3'),
+      divider(classes: 'my-3'),
       label('Agent',
-          className:
+          classes:
               'text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2'),
       div(children: [
         reactiveBadge(
