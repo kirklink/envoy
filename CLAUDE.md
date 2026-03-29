@@ -65,7 +65,7 @@ Permission tiers: `compute < readFile < writeFile < network < process`
 ### Tool input validation (`envoy_tools/lib/src/schema_validator.dart`)
 
 All tools mix in `SchemaValidatingTool`, which calls `SchemaValidator.validate(input, inputSchema)`
-before `execute()`. The validator maps JSON Schema `required` + `type` fields to Endorse rules.
+before `execute()`. The validator maps JSON Schema `required` + `type` fields to validation rules.
 Returns `ToolResult.err(...)` on failure — execution never reaches `execute()`.
 
 Supported `type` values: `string`, `integer`, `number`, `boolean`, `array`, `object`.
@@ -135,16 +135,16 @@ envoy_tools/
     run_dart_tool.dart      - RunDartTool
     dynamic_tool.dart       - DynamicTool (subprocess wrapper for registered tools)
     register_tool_tool.dart - RegisterToolTool (meta-tool; analyze + register)
-    schema_validator.dart   - SchemaValidator (JSON Schema → Endorse rules)
+    schema_validator.dart   - SchemaValidator (JSON Schema → validation rules)
     schema_validating_tool.dart - SchemaValidatingTool mixin
     envoy_tools.dart        - EnvoyTools.defaults() factory
-    persistence/
+    persistence/                    ⚠️ LEGACY — depends on removed `stanza` package
       stanza_entities.dart      - ToolRecordEntity, SessionEntity, MessageEntity
       stanza_entities.g.dart    - Generated Stanza table/entity code
       stanza_storage.dart       - StanzaEnvoyStorage (tool registry + session history)
       search_tools_tool.dart    - SearchToolsTool (FTS over persisted registry)
-      memory_entity.dart        - MemoryEntity (@StanzaEntity for envoy_memory table)
-      memory_entity.g.dart      - Generated Stanza table/entity code
+      memory_entity.dart        - MemoryEntity (envoy_memory table)
+      memory_entity.g.dart      - Generated table/entity code
       stanza_memory_storage.dart - StanzaMemoryStorage (implements AgentMemory)
   lib/envoy_tools.dart      - Public exports
   test/envoy_tools_test.dart
@@ -216,7 +216,7 @@ final result = await agent.run(
 );
 ```
 
-### With persistence (Phase 3b)
+### With persistence (Phase 3b) — ⚠️ LEGACY: depends on removed `stanza` package
 
 ```dart
 import 'package:stanza/stanza.dart';
@@ -268,7 +268,7 @@ agent.registerTool(RegisterToolTool(
 - `saveTool(tool)` — upserts by name
 - `searchTools(query)` → `List<Map<String,String>>` — FTS on name + description, ranked by `ts_rank`
 
-### With agent memory (Phase 4a)
+### With agent memory (Phase 4a) — ⚠️ LEGACY: depends on removed `stanza` package
 
 ```dart
 import 'package:stanza/stanza.dart';
@@ -401,10 +401,9 @@ class MyTool extends Tool {
   it makes a separate LLM call, does not touch the session context, and stores whatever
   the agent considers worth keeping. No prescribed type taxonomy — agent chooses its own labels.
 
-- **`stanza/annotations.dart` exports schema types**: The `stanza_builder` code generator
-  produces a `$schema` getter on table classes that references `SchemaTable`, `SchemaColumn`,
-  `ColumnType`. These are now exported from `annotations.dart` so entity files work without
-  importing `stanza.dart` directly.
+- **⚠️ Legacy persistence**: The `persistence/` directory in `envoy_tools` depends on the
+  removed `stanza` and `endorse` packages. These files still exist but the dependencies are
+  broken. They need to be rewritten if persistence is restored.
 
 - **Roadmap**: `agent_plan.md` in repo root. Phases 0–3b + 4a done; 4b (injection),
   5 (Arrow HTTP), 6 (MCP) pending.

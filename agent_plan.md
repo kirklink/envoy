@@ -48,7 +48,7 @@ builds it. The developer provides goals and guardrails, not pipelines.
 4. **Simple first.** Each phase must be independently useful. No phase requires the
    next to have value.
 
-5. **Leverage what exists.** Swoop (HTTP), Endorse (validation), Stanza (persistence)
+5. **Leverage what exists.** Swoop (HTTP), Ladle (persistence)
    are the runtime stack. Build the agent layer on top, not around.
 
 6. **Don't lock in.** Abstractions at LLM provider and persistence boundaries so the
@@ -63,7 +63,7 @@ Single repo (`kirklink/envoy`), two packages (currently):
 ```
 envoy/
   envoy/          - Core: agent loop, LLM interface, conversation context, memory
-  envoy_tools/    - Seed tools, dynamic tool registration, persistence (Stanza-backed)
+  envoy_tools/    - Seed tools, dynamic tool registration, persistence (⚠️ legacy Stanza — needs migration)
 ```
 
 `anthropic_sdk_dart` (pub.dev) is a dependency of `envoy`, not a package we build.
@@ -73,8 +73,8 @@ envoy/
 | Package       | Role                                                               |
 |---------------|--------------------------------------------------------------------|
 | `swoop`       | HTTP interface for the agent; future MCP server endpoint           |
-| `endorse`     | Validates tool inputs/outputs at execution boundary                |
-| `stanza`      | Persists tool registry, session history, and agent memory          |
+| ~~`endorse`~~ | ⚠️ Removed — validation was inline; needs replacement if restored |
+| ~~`stanza`~~  | ⚠️ Removed — persistence layer needs migration to Ladle/Tureen   |
 
 ---
 

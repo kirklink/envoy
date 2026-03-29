@@ -741,7 +741,7 @@ CREATE TABLE relationships (
 );
 ```
 
-Multi-agent prefix applied to all table names via `SouvenirCellar`, same as v2.
+Multi-agent prefix applied to all table names via `SouvenirFactory`, same as v2.
 
 ---
 
@@ -768,7 +768,7 @@ Multi-agent prefix applied to all table names via `SouvenirCellar`, same as v2.
 - Component-specific decay curves and lifecycle rules
 - `EpisodeStore` for episode persistence
 - `EmbeddingProvider` interface (Ollama, etc.)
-- `SouvenirCellar` factory pattern (multi-agent prefix, encryption)
+- `SouvenirFactory` factory pattern (multi-agent prefix, encryption)
 - `ConsolidationReport` structure
 - `LlmCallback` typedef
 - `Tokenizer` for budget accounting
@@ -850,7 +850,7 @@ All phases complete. See `eval/` for full evaluation reports.
 - `Souvenir` engine delegates recall to `UnifiedRecall`
 - `Mixer` removed (replaced by `RecallConfig` + score fusion)
 - `Budget` simplified to global token cap
-- `SouvenirCellar` factory updated for unified store
+- `SouvenirFactory` factory updated for unified store
 
 ### Phase 5: Automated Recall Quality Tests — Complete
 
@@ -863,7 +863,7 @@ All phases complete. See `eval/` for full evaluation reports.
 ### Phase 6: Legacy Cleanup — Complete
 
 - Per-component stores removed
-- `SouvenirCellar` migrated to unified store factory
+- `SouvenirFactory` migrated to unified store factory
 
 ### Phase 7: Evaluation Harness — Complete
 
@@ -951,10 +951,8 @@ lib/src/
   stored_memory.dart                   ← StoredMemory, MemoryStatus, Entity, Relationship
   in_memory_memory_store.dart          ← In-memory MemoryStore (for tests)
   sqlite_memory_store.dart             ← SQLite/FTS5 MemoryStore
-  souvenir_cellar.dart                 ← Factory: multi-agent prefix + encryption
   memory_component.dart                ← MemoryComponent interface + ConsolidationReport
   episode_store.dart                   ← EpisodeStore interface + InMemoryEpisodeStore
-  cellar_episode_store.dart            ← SQLite EpisodeStore
   embedding_provider.dart              ← EmbeddingProvider interface
   ollama_embedding_provider.dart       ← Ollama embedding implementation
   llm_callback.dart                    ← LlmCallback typedef

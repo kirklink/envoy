@@ -1,6 +1,6 @@
 name: envoy_dashboard_client
 publish_to: none
-description: Envoy agent dashboard — Trellis UI.
+description: Envoy agent dashboard — Swoop SPA UI.
 version: 0.1.0
 
 environment:

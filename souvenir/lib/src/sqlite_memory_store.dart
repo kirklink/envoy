@@ -24,7 +24,7 @@ class SqliteMemoryStore implements MemoryStore {
   /// Creates a SQLite memory store.
   ///
   /// [db] is a raw sqlite3 database (e.g., from `sqlite3.openInMemory()`
-  /// or from `cellar.database`). [prefix] is prepended to all table names
+  /// or from `ladle.database`). [prefix] is prepended to all table names
   /// for multi-agent isolation.
   SqliteMemoryStore(this._db, {String prefix = ''}) : _prefix = prefix;
 

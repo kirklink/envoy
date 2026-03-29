@@ -53,7 +53,7 @@ abstract class Tool {
   String get description;
 
   /// JSON Schema describing the tool's input. Used for LLM tool calling
-  /// and validated by Endorse at execution time (Phase 2).
+  /// and validated at execution time.
   Map<String, dynamic> get inputSchema;
 
   /// Permission tier required by this tool.
@@ -65,7 +65,7 @@ abstract class Tool {
   /// short-circuit execution and surface the error to the LLM.
   ///
   /// The default implementation does no validation. Override — or mix in
-  /// `SchemaValidatingTool` from `envoy_tools` — to add Endorse-backed
+  /// `SchemaValidatingTool` from `envoy_tools` — to add
   /// JSON Schema validation.
   Future<ToolResult?> validateInput(Map<String, dynamic> input) async => null;
 

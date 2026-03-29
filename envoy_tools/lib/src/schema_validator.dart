@@ -1,7 +1,9 @@
-import 'package:endorse/endorse.dart';
+// TODO: `endorse` package was removed. Replace with inline validation or
+// a new validation dependency. This file cannot compile until resolved.
+import 'package:endorse/endorse.dart'; // ⚠️ BROKEN — package removed
 import 'package:envoy/envoy.dart';
 
-/// Maps a JSON Schema [inputSchema] to Endorse validation rules and validates
+/// Maps a JSON Schema [inputSchema] to validation rules and validates
 /// [input] against them.
 ///
 /// Supports the subset of JSON Schema used in tool definitions:

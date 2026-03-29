@@ -83,9 +83,9 @@ introducing.
 The analyzer catches syntax and type errors. It does not catch:
 
 - Using the wrong pattern for your framework
-- Missing required annotations (e.g., Chary on public fields)
+- Missing required annotations (e.g., required decorators on public fields)
 - Architectural mistakes (e.g., reading `.value` during component init in
-  Trellis)
+  Swoop SPA)
 - Incorrect API usage that happens to be type-safe
 
 This is where **guide documents** matter. The documentation standard used across
@@ -118,7 +118,7 @@ first message).
 For project-specific invariants the standard analyzer can't enforce, consider
 the `custom_lint` package. Examples:
 
-- "Never read `.value` during Trellis component init"
+- "Never read `.value` during Swoop SPA component init"
 - "All Swoop handler functions must return a `Response` subtype"
 - "Chary-annotated classes must not have public fields without `@CharyField`"
 

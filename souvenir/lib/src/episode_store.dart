@@ -3,7 +3,7 @@ import 'models/episode.dart';
 /// Abstract storage for episodes.
 ///
 /// Decouples the engine from any specific storage backend. Phase 1 uses
-/// [InMemoryEpisodeStore]; later phases add SQLite via Stanza.
+/// [InMemoryEpisodeStore]; production use adds SQLite via Ladle.
 abstract class EpisodeStore {
   /// Persists a batch of episodes.
   Future<void> insert(List<Episode> episodes);

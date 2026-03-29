@@ -34,6 +34,3 @@ export 'src/compaction_config.dart';
 export 'src/compaction_report.dart';
 export 'src/store_stats.dart';
 
-// Cellar integration.
-export 'src/cellar_episode_store.dart';
-export 'src/souvenir_cellar.dart';

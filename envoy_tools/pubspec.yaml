@@ -8,17 +8,8 @@ environment:
 dependencies:
   envoy:
     path: ../envoy
-  endorse:
-    path: ../../endorse
-  stanza:
-    path: ../../stanza/stanza
   html2md: ^1.3.2
   http: ^1.1.0
   path: ^1.9.0
 dev_dependencies:
-  build_runner: ^2.4.0
-  stanza_builder:
-    path: ../../stanza/stanza_builder
-  stanza_postgres:
-    path: ../../stanza/stanza_postgres
   test: ^1.25.0
