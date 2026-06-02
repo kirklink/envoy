@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:js_interop';
 
-import 'package:swoop/spa.dart';
+import 'package:swoop_app/spa.dart';
 import 'package:web/web.dart' as web;
 
 // In dev mode, the server runs on a different port.
