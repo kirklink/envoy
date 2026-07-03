@@ -1,6 +1,3 @@
-// TODO: `endorse` package was removed. Replace with inline validation or
-// a new validation dependency. This file cannot compile until resolved.
-import 'package:endorse/endorse.dart'; // ⚠️ BROKEN — package removed
 import 'package:envoy/envoy.dart';
 
 /// Maps a JSON Schema [inputSchema] to validation rules and validates
@@ -28,38 +25,44 @@ class SchemaValidator {
     for (final entry in properties.entries) {
       final fieldName = entry.key;
       final fieldSchema = entry.value as Map<String, dynamic>? ?? {};
-      final isRequired = required.contains(fieldName);
       final value = input[fieldName];
 
-      final rules = <Rule>[];
-      if (isRequired) rules.add(const Required());
-
-      // Only add type rules when a value is present; Required() handles
-      // the absent-but-required case above.
-      if (value != null) {
-        switch (fieldSchema['type'] as String?) {
-          case 'string':
-            rules.add(const IsString());
-          case 'integer':
-            rules.add(const IsInt());
-          case 'number':
-            rules.add(const IsNum());
-          case 'boolean':
-            rules.add(const IsBool());
-          case 'array':
-            rules.add(const IsList());
-          case 'object':
-            rules.add(const IsMap());
+      if (value == null) {
+        if (required.contains(fieldName)) {
+          errors.add('  $fieldName: is required');
         }
+        continue;
       }
 
-      final (fieldErrors, _) = checkRules(value, rules);
-      for (final msg in fieldErrors) {
-        errors.add('  $fieldName: $msg');
+      final expectedType = fieldSchema['type'] as String?;
+      final typeError = _checkType(value, expectedType);
+      if (typeError != null) {
+        errors.add('  $fieldName: $typeError');
       }
     }
 
     if (errors.isEmpty) return null;
     return ToolResult.err('Input validation failed:\n${errors.join('\n')}');
+  }
+
+  /// Returns an error message if [value] does not match [expectedType],
+  /// or `null` if it does (or the type is unrecognized/unspecified).
+  static String? _checkType(dynamic value, String? expectedType) {
+    switch (expectedType) {
+      case 'string':
+        return value is String ? null : 'must be a string';
+      case 'integer':
+        return value is int ? null : 'must be an integer';
+      case 'number':
+        return value is num ? null : 'must be a number';
+      case 'boolean':
+        return value is bool ? null : 'must be a boolean';
+      case 'array':
+        return value is List ? null : 'must be an array';
+      case 'object':
+        return value is Map ? null : 'must be an object';
+      default:
+        return null;
+    }
   }
 }
