@@ -24,6 +24,19 @@ class RecallConfig {
   /// Components not listed default to 1.0.
   final Map<String, double> componentWeights;
 
+  /// Per-category weight multipliers, applied alongside
+  /// [componentWeights]. Categories not listed default to 1.0.
+  ///
+  /// Category names are matched as-is across all components — if two
+  /// components share a category name, the weight applies to both.
+  final Map<String, double> categoryWeights;
+
+  /// Components whose memories are excluded from recall entirely.
+  ///
+  /// A hard off-switch: excluded memories never become candidates, unlike
+  /// a 0.0 entry in [componentWeights] which scores-then-discards.
+  final Set<String> excludeComponents;
+
   /// Minimum relevance score to include in results.
   /// Memories below this threshold are dropped (silence > noise).
   final double relevanceThreshold;
@@ -35,15 +48,60 @@ class RecallConfig {
   /// Score multiplied by `exp(-temporalDecayLambda * ageDays)`.
   final double temporalDecayLambda;
 
+  /// Vector cosine noise floor.
+  ///
+  /// Real embedding models score unrelated text well above zero
+  /// (~0.1–0.3 cosine depending on the model). Similarities at or below
+  /// the floor contribute nothing; above it the signal is rescaled to
+  /// [0, 1] via `(cos - floor) / (1 - floor)`. This lets
+  /// [relevanceThreshold] filter genuine junk instead of compensating
+  /// for the embedding model's score distribution. Set to 0 to disable.
+  ///
+  /// The floor is a property of the embedding model — calibrate it when
+  /// switching models (eval-validated: `all-minilm` ≈ 0.2 (the default),
+  /// `nomic-embed-text` ≈ 0.4).
+  final double vectorNoiseFloor;
+
   const RecallConfig({
     this.ftsWeight = 1.0,
     this.vectorWeight = 1.5,
     this.entityWeight = 0.8,
     this.componentWeights = const {},
+    this.categoryWeights = const {},
+    this.excludeComponents = const {},
     this.relevanceThreshold = 0.05,
     this.topK = 20,
     this.temporalDecayLambda = 0.005,
+    this.vectorNoiseFloor = 0.2,
   });
+
+  /// Copy with selected fields replaced — the ergonomic base for per-call
+  /// overrides and profile derivation.
+  RecallConfig copyWith({
+    double? ftsWeight,
+    double? vectorWeight,
+    double? entityWeight,
+    Map<String, double>? componentWeights,
+    Map<String, double>? categoryWeights,
+    Set<String>? excludeComponents,
+    double? relevanceThreshold,
+    int? topK,
+    double? temporalDecayLambda,
+    double? vectorNoiseFloor,
+  }) {
+    return RecallConfig(
+      ftsWeight: ftsWeight ?? this.ftsWeight,
+      vectorWeight: vectorWeight ?? this.vectorWeight,
+      entityWeight: entityWeight ?? this.entityWeight,
+      componentWeights: componentWeights ?? this.componentWeights,
+      categoryWeights: categoryWeights ?? this.categoryWeights,
+      excludeComponents: excludeComponents ?? this.excludeComponents,
+      relevanceThreshold: relevanceThreshold ?? this.relevanceThreshold,
+      topK: topK ?? this.topK,
+      temporalDecayLambda: temporalDecayLambda ?? this.temporalDecayLambda,
+      vectorNoiseFloor: vectorNoiseFloor ?? this.vectorNoiseFloor,
+    );
+  }
 }
 
 /// A single recalled memory with score breakdown.
@@ -125,19 +183,27 @@ class UnifiedRecall {
   RecallConfig get config => _config;
 
   /// Recall memories relevant to [query] within [budgetTokens].
-  Future<RecallResult> recall(String query, {int budgetTokens = 4000}) async {
+  ///
+  /// [config] overrides the instance default for this call only — the
+  /// hook for query-adaptive weighting (see RecallProfiles).
+  Future<RecallResult> recall(
+    String query, {
+    int budgetTokens = 4000,
+    RecallConfig? config,
+  }) async {
+    final cfg = config ?? _config;
+    final excluded = cfg.excludeComponents;
+
     // 1. Gather candidates from all signals.
     final candidates = <String, _Candidate>{};
 
-    // Signal 1: FTS5 BM25 across all memories.
+    // Signal 1: full-text search across all memories. FtsMatch.score is
+    // the store's normalized [0, 1] absolute relevance — a weak best-match
+    // stays weak rather than being inflated to 1.0 by max-normalization.
     final ftsResults = await _store.searchFts(query, limit: 50);
-    double maxBm25 = 0;
     for (final m in ftsResults) {
-      if (m.score > maxBm25) maxBm25 = m.score;
-    }
-    for (final m in ftsResults) {
-      final normalized = maxBm25 > 0 ? m.score / maxBm25 : 0.0;
-      _getOrCreate(candidates, m.memory).ftsScore = normalized;
+      if (excluded.contains(m.memory.component)) continue;
+      _getOrCreate(candidates, m.memory).ftsScore = m.score.clamp(0.0, 1.0);
     }
 
     // Signal 2: Vector similarity (if embeddings available).
@@ -145,6 +211,7 @@ class UnifiedRecall {
       final queryVec = await _embeddings!.embed(query);
       final embedded = await _store.loadActiveWithEmbeddings();
       for (final mem in embedded) {
+        if (excluded.contains(mem.component)) continue;
         final sim = cosineSimilarity(queryVec, mem.embedding!);
         if (sim > 0) {
           _getOrCreate(candidates, mem).vectorScore = sim;
@@ -153,19 +220,26 @@ class UnifiedRecall {
     }
 
     // Signal 3: Entity graph expansion.
-    await _entityGraphExpansion(query, candidates);
+    await _entityGraphExpansion(query, candidates, excluded);
 
     if (candidates.isEmpty) return const RecallResult(items: []);
 
     // 2. Fuse signals into final score.
+    final floor = cfg.vectorNoiseFloor;
     for (final c in candidates.values) {
-      final rawScore = (_config.ftsWeight * c.ftsScore) +
-          (_config.vectorWeight * c.vectorScore) +
-          (_config.entityWeight * c.entityScore);
+      // Noise-floored vector signal; c.vectorScore keeps the raw cosine
+      // for the ScoredRecall signal breakdown.
+      final vector = floor > 0
+          ? math.max(0.0, (c.vectorScore - floor) / (1.0 - floor))
+          : c.vectorScore;
 
-      // Component weight.
-      final componentWeight =
-          _config.componentWeights[c.memory.component] ?? 1.0;
+      final rawScore = (cfg.ftsWeight * c.ftsScore) +
+          (cfg.vectorWeight * vector) +
+          (cfg.entityWeight * c.entityScore);
+
+      // Component and category weights.
+      final componentWeight = cfg.componentWeights[c.memory.component] ?? 1.0;
+      final categoryWeight = cfg.categoryWeights[c.memory.category] ?? 1.0;
 
       // Importance multiplier.
       final importance = c.memory.importance;
@@ -173,18 +247,21 @@ class UnifiedRecall {
       // Temporal decay.
       final ageDays =
           DateTime.now().difference(c.memory.updatedAt).inHours / 24.0;
-      final decay =
-          math.exp(-_config.temporalDecayLambda * math.max(0, ageDays));
+      final decay = math.exp(-cfg.temporalDecayLambda * math.max(0, ageDays));
 
       // Access frequency boost (logarithmic).
       final accessBoost = 1 + math.log(1 + c.memory.accessCount) * 0.1;
 
-      c.finalScore =
-          rawScore * componentWeight * importance * decay * accessBoost;
+      c.finalScore = rawScore *
+          componentWeight *
+          categoryWeight *
+          importance *
+          decay *
+          accessBoost;
     }
 
     // 3. Filter by relevance threshold.
-    candidates.removeWhere((_, c) => c.finalScore < _config.relevanceThreshold);
+    candidates.removeWhere((_, c) => c.finalScore < cfg.relevanceThreshold);
 
     // 4. Sort descending, deduplicate by content.
     final sorted = candidates.values.toList()
@@ -199,7 +276,7 @@ class UnifiedRecall {
     }
 
     // 5. Take topK.
-    final limited = deduped.take(_config.topK).toList();
+    final limited = deduped.take(cfg.topK).toList();
 
     // 6. Budget-aware cutoff.
     final selected = <ScoredRecall>[];
@@ -235,6 +312,7 @@ class UnifiedRecall {
   Future<void> _entityGraphExpansion(
     String query,
     Map<String, _Candidate> candidates,
+    Set<String> excludedComponents,
   ) async {
     final matchedEntities = await _store.findEntitiesByName(query);
     if (matchedEntities.isEmpty) return;
@@ -261,6 +339,7 @@ class UnifiedRecall {
     final memories =
         await _store.findMemoriesByEntityIds(allEntityIds.toList());
     for (final mem in memories) {
+      if (excludedComponents.contains(mem.component)) continue;
       var bestConfidence = 0.0;
       for (final eid in mem.entityIds) {
         final conf = confidenceByEntityId[eid] ?? 0.0;

@@ -49,6 +49,9 @@ class QualityTestEmbeddings implements EmbeddingProvider {
     // Mixed / general
     'project setup': [0.0, 0.4, 0.3, 0.3],
     'authentication': [0.0, 0.3, 0.2, 0.5],
+    // Off-cluster: distinct from the default vector so unrelated texts
+    // don't score cosine 1.0 against each other (real models never do).
+    'hiking': [0.6, 0.0, 0.0, 0.4],
   };
 
   @override
@@ -299,11 +302,15 @@ void main() {
 
   group('Relevance threshold (silence > noise)', () {
     test('completely unrelated query returns few or no results', () async {
+      // vectorNoiseFloor is disabled here: this test exercises threshold
+      // mechanics, and the fake embeddings' weak cross-cluster similarity
+      // (~0.1) is exactly the signal band the two thresholds disagree on.
       final strictRecall = UnifiedRecall(
         store: store,
         tokenizer: const ApproximateTokenizer(),
         config: const RecallConfig(
           relevanceThreshold: 0.5,
+          vectorNoiseFloor: 0,
         ),
         embeddings: QualityTestEmbeddings(),
       );
@@ -316,7 +323,10 @@ void main() {
       final permissiveRecall = UnifiedRecall(
         store: store,
         tokenizer: const ApproximateTokenizer(),
-        config: const RecallConfig(relevanceThreshold: 0.01),
+        config: const RecallConfig(
+          relevanceThreshold: 0.01,
+          vectorNoiseFloor: 0,
+        ),
         embeddings: QualityTestEmbeddings(),
       );
       final permissiveResult =

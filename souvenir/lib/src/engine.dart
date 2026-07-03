@@ -9,6 +9,7 @@ import 'memory_component.dart';
 import 'memory_store.dart';
 import 'models/episode.dart';
 import 'recall.dart';
+import 'recall_profiles.dart';
 import 'store_stats.dart';
 import 'stored_memory.dart';
 import 'tokenizer.dart';
@@ -45,6 +46,11 @@ class Souvenir {
   /// Optional embedding provider for post-consolidation embedding generation.
   final EmbeddingProvider? _embeddings;
 
+  /// Optional query classifier for adaptive recall. When set, recall
+  /// calls without an explicit config override derive a per-query
+  /// profile from the base configuration.
+  final QueryClassifier? queryClassifier;
+
   final EpisodeStore _episodeStore;
   final CompactionConfig _compactionConfig;
   final int _flushThreshold;
@@ -71,6 +77,7 @@ class Souvenir {
     Tokenizer tokenizer = const ApproximateTokenizer(),
     int flushThreshold = 50,
     int defaultBudgetTokens = 4000,
+    this.queryClassifier,
   })  : _episodeStore = episodeStore ?? InMemoryEpisodeStore(),
         _embeddings = embeddings,
         _compactionConfig = compactionConfig,
@@ -146,11 +153,24 @@ class Souvenir {
   ///
   /// Delegates to the [UnifiedRecall] pipeline which queries the shared
   /// store with FTS5, vector similarity, and entity graph signals.
-  Future<RecallResult> recall(String query, {int? budgetTokens}) async {
+  ///
+  /// [config] overrides the engine's recall configuration for this call
+  /// only — use with [RecallConfig.copyWith] or a [RecallProfiles] preset
+  /// to bias recall toward the query's intent.
+  Future<RecallResult> recall(
+    String query, {
+    int? budgetTokens,
+    RecallConfig? config,
+  }) async {
     _requireInitialized();
+    // An explicit override wins; otherwise the classifier (when wired)
+    // derives a per-query profile from the base configuration.
+    final effective =
+        config ?? queryClassifier?.profileFor(query, _recall.config);
     return _recall.recall(
       query,
       budgetTokens: budgetTokens ?? _defaultBudgetTokens,
+      config: effective,
     );
   }
 

@@ -427,10 +427,18 @@ finalScore   = rawScore
 ```
 
 Where:
-- `ftsScore_norm` = BM25 score normalized to [0, 1] by dividing by max BM25
-  score in the result set (0 if empty)
-- `cosineSimilarity` = raw cosine similarity (already in [0, 1] for normalized
-  embeddings)
+- `ftsScore_norm` = the store's absolute [0, 1] relevance score. *(Updated
+  2026-07-03: originally BM25-divided-by-max-in-result-set, which handed a
+  weak best-match a perfect 1.0 — the same "normalizing within noise" flaw
+  this doc criticizes in v2's mixer. Now each store normalizes absolutely:
+  SQLite saturates BM25 as `bm25 / (bm25 + k)`; the in-memory store uses
+  query-token coverage damped by memory length.)*
+- `cosineSimilarity` = noise-floored cosine: `max(0, (cos − floor) / (1 −
+  floor))` with `RecallConfig.vectorNoiseFloor`. *(Added 2026-07-03: real
+  embedding models score unrelated text ~0.1–0.3, so raw cosine let noise
+  through the relevance threshold. The floor is model-specific — all-minilm
+  ≈ 0.2 (default), nomic-embed-text ≈ 0.4. `ScoredRecall.vectorSignal`
+  still reports the raw cosine.)*
 - `entityScore_norm` = 1.0 if directly mentioned, confidence score if 1-hop
   related, 0 if not in entity graph
 - `componentWeight` = per-component multiplier from `RecallConfig`
@@ -817,6 +825,30 @@ Even with Dart importance at 0.80 and rabbits at 0.40:
 Rabbits scores **18.5x** higher. In v2 with RRF, Dart scored 3.8x higher.
 
 ---
+
+## 2026-07-03 Hardening Update
+
+Post-v3 changes (this repo, single commit series):
+
+- **Stale-embedding fix**: `MemoryStore.update(content: ...)` without a fresh
+  embedding now clears the stored vector; the engine's post-consolidation
+  embed pass regenerates it. Previously, merge paths left memories searching
+  by their pre-merge vectors.
+- **Vector noise floor** (`RecallConfig.vectorNoiseFloor`, default 0.2) and
+  **absolute FTS normalization** (see Score Fusion above). Eval with real
+  Ollama embeddings: 17/18 at the default config (previously required
+  `relevanceThreshold: 0.25` to pass the silence scenarios).
+- **Tunability**: `excludeComponents` (hard off-switch per component),
+  `categoryWeights` (mirror of componentWeights), per-call `config:`
+  override on `recall()`, `RecallConfig.copyWith`.
+- **Adaptive profiles**: `RecallProfiles` (task/durable/environment focus)
+  + pluggable `QueryClassifier` (`HeuristicQueryClassifier` default),
+  optionally wired via `Souvenir(queryClassifier: ...)`.
+- **Eval fake improved**: unknown texts get hash-bucketed near-orthogonal
+  vectors (~0.09 cosine noise floor) instead of one shared default vector
+  (cosine 1.0 between unrelated texts — behavior no real model has). The
+  fake suite now scores 18/18 under the same scoring rules as real
+  embeddings.
 
 ## Implementation Status
 

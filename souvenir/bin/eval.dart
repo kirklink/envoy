@@ -46,6 +46,9 @@ Future<void> main(List<String> args) async {
     ..addOption('decay',
         defaultsTo: '0.005',
         help: 'Temporal decay lambda (higher = faster decay with age)')
+    ..addOption('vector-floor',
+        defaultsTo: '0.2',
+        help: 'Vector cosine noise floor (0 disables)')
     ..addFlag('ollama',
         defaultsTo: false,
         negatable: false,
@@ -85,6 +88,7 @@ Future<void> main(List<String> args) async {
     entityWeight: double.parse(parsed['entity-weight'] as String),
     relevanceThreshold: double.parse(parsed['threshold'] as String),
     temporalDecayLambda: double.parse(parsed['decay'] as String),
+    vectorNoiseFloor: double.parse(parsed['vector-floor'] as String),
   );
 
   // Set up embedding provider.

@@ -5,6 +5,7 @@ export 'src/engine.dart';
 
 // Unified recall.
 export 'src/recall.dart';
+export 'src/recall_profiles.dart';
 
 // Unified store.
 export 'src/memory_store.dart';

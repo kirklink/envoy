@@ -237,6 +237,143 @@ void main() {
     });
   });
 
+  // ── Vector noise floor ────────────────────────────────────────────
+
+  group('vector noise floor', () {
+    test('cosine at or below the floor contributes nothing', () async {
+      final queryVec = _vectorAt(0.0);
+      final noiseVec = _vectorAt(1.37); // cosine ~0.2 with query
+
+      final embeddings = FakeEmbeddingProvider({'xyzzy': queryVec});
+
+      await store.insert(StoredMemory(
+        content: 'Completely unrelated background noise',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.9,
+        embedding: noiseVec,
+      ));
+
+      final recall = UnifiedRecall(
+        store: store,
+        tokenizer: tokenizer,
+        embeddings: embeddings,
+        config: const RecallConfig(
+          vectorNoiseFloor: 0.25,
+          relevanceThreshold: 0.01,
+        ),
+      );
+
+      final result = await recall.recall('xyzzy');
+      expect(result.items, isEmpty,
+          reason: 'sub-floor cosine must not pass the relevance threshold');
+    });
+
+    test('cosine above the floor is rescaled, strong match survives',
+        () async {
+      final queryVec = _vectorAt(0.0);
+      final strongVec = _vectorAt(0.1); // cosine ~0.995
+      final weakVec = _vectorAt(1.2); // cosine ~0.36
+
+      final embeddings = FakeEmbeddingProvider({'xyzzy': queryVec});
+
+      await store.insert(StoredMemory(
+        content: 'Strong semantic match memory',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.5,
+        embedding: strongVec,
+      ));
+      await store.insert(StoredMemory(
+        content: 'Weak tangential match memory',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.5,
+        embedding: weakVec,
+      ));
+
+      final recall = UnifiedRecall(
+        store: store,
+        tokenizer: tokenizer,
+        embeddings: embeddings,
+        config: const RecallConfig(
+          vectorNoiseFloor: 0.25,
+          relevanceThreshold: 0.05,
+        ),
+      );
+
+      final result = await recall.recall('xyzzy');
+      expect(result.items.first.content, contains('Strong'));
+      // Raw cosine is reported unfloored in the signal breakdown.
+      expect(result.items.first.vectorSignal, greaterThan(0.9));
+      if (result.items.length > 1) {
+        final strong = result.items[0].score;
+        final weak = result.items[1].score;
+        // Floor rescaling widens the strong/weak gap beyond the raw
+        // cosine ratio (~2.8x raw → >6x floored).
+        expect(strong / weak, greaterThan(4));
+      }
+    });
+
+    test('floor of 0 disables the mechanism', () async {
+      final queryVec = _vectorAt(0.0);
+      final noiseVec = _vectorAt(1.37); // cosine ~0.2
+
+      final embeddings = FakeEmbeddingProvider({'xyzzy': queryVec});
+
+      await store.insert(StoredMemory(
+        content: 'Weak but nonzero match',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.9,
+        embedding: noiseVec,
+      ));
+
+      final recall = UnifiedRecall(
+        store: store,
+        tokenizer: tokenizer,
+        embeddings: embeddings,
+        config: const RecallConfig(
+          vectorNoiseFloor: 0,
+          relevanceThreshold: 0.01,
+        ),
+      );
+
+      final result = await recall.recall('xyzzy');
+      expect(result.items, hasLength(1),
+          reason: 'with the floor disabled, weak cosine still surfaces');
+    });
+  });
+
+  // ── Absolute FTS scoring ──────────────────────────────────────────
+
+  group('absolute FTS scoring', () {
+    test('weak best-match keeps a weak score (no max-normalization)',
+        () async {
+      // Single memory with minimal token overlap: it is the max of its
+      // result set, but must not receive a perfect FTS signal.
+      await store.insert(StoredMemory(
+        content: 'A long sentence mentioning programming among many '
+            'other unrelated words and various further padding tokens',
+        component: 'durable',
+        category: 'fact',
+        importance: 0.8,
+      ));
+
+      final recall = UnifiedRecall(
+        store: store,
+        tokenizer: tokenizer,
+        config: const RecallConfig(relevanceThreshold: 0.01),
+      );
+
+      final result = await recall.recall('programming');
+      expect(result.items, hasLength(1));
+      expect(result.items.first.ftsSignal, greaterThan(0));
+      expect(result.items.first.ftsSignal, lessThan(0.5),
+          reason: 'a one-token overlap must not normalize to 1.0');
+    });
+  });
+
   // ── Entity graph recall ───────────────────────────────────────────
 
   group('entity graph recall', () {

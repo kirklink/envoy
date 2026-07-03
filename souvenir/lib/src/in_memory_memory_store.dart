@@ -43,7 +43,9 @@ class InMemoryMemoryStore implements MemoryStore {
       importance: importance ?? m.importance,
       sessionId: m.sessionId,
       sourceEpisodeIds: sourceEpisodeIds ?? m.sourceEpisodeIds,
-      embedding: embedding ?? m.embedding,
+      // Content changed without a fresh vector → clear the stale embedding
+      // so the engine's re-embed pass regenerates it.
+      embedding: embedding ?? (content != null ? null : m.embedding),
       entityIds: entityIds ?? m.entityIds,
       createdAt: m.createdAt,
       updatedAt: DateTime.now().toUtc(),
@@ -93,7 +95,9 @@ class InMemoryMemoryStore implements MemoryStore {
 
   @override
   Future<List<FtsMatch>> searchFts(String query, {int limit = 50}) async {
-    // Approximate FTS with Jaccard token overlap.
+    // Absolute relevance per the FtsMatch contract: fraction of query
+    // tokens matched, damped by memory length (a long document dilutes a
+    // single-term hit) — a rough stand-in for saturated BM25.
     final queryTokens = _tokenize(query);
     if (queryTokens.isEmpty) return [];
 
@@ -101,13 +105,11 @@ class InMemoryMemoryStore implements MemoryStore {
     for (final m in _memories) {
       if (!m.isActive) continue;
       final candidateTokens = _tokenize(m.content);
-      final intersection = queryTokens.intersection(candidateTokens);
-      final union = queryTokens.union(candidateTokens);
-      if (union.isEmpty) continue;
-      final jaccard = intersection.length / union.length;
-      if (jaccard > 0) {
-        scored.add(FtsMatch(memory: m, score: jaccard));
-      }
+      final overlap = queryTokens.intersection(candidateTokens).length;
+      if (overlap == 0) continue;
+      final coverage = overlap / queryTokens.length;
+      final lengthDamp = 8 / (8 + candidateTokens.length);
+      scored.add(FtsMatch(memory: m, score: coverage * lengthDamp));
     }
 
     scored.sort((a, b) => b.score.compareTo(a.score));

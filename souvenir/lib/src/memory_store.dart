@@ -1,12 +1,17 @@
 import 'store_stats.dart';
 import 'stored_memory.dart';
 
-/// A memory with its BM25 relevance score from full-text search.
+/// A memory with its relevance score from full-text search.
 class FtsMatch {
   /// The matched memory.
   final StoredMemory memory;
 
-  /// BM25 relevance score (higher = more relevant).
+  /// Normalized relevance in [0, 1]; higher = more relevant.
+  ///
+  /// Implementations map their native scale (BM25, Jaccard, …) onto this
+  /// range *absolutely*: a weak match scores low even when it is the best
+  /// match available. Recall consumes this directly — there is no
+  /// max-in-result-set re-normalization downstream.
   final double score;
 
   const FtsMatch({required this.memory, required this.score});
@@ -29,6 +34,11 @@ abstract class MemoryStore {
 
   /// Partially update a memory by ID. Only non-null fields are updated.
   /// Always bumps [StoredMemory.updatedAt].
+  ///
+  /// Updating [content] without supplying a new [embedding] clears the
+  /// stored embedding — the old vector no longer describes the new text.
+  /// The engine's post-consolidation embedding pass picks the memory up
+  /// via [findUnembeddedMemories] and re-embeds it.
   Future<void> update(
     String id, {
     String? content,

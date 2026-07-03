@@ -8,11 +8,18 @@ import 'types.dart';
 /// Fake embedding provider with manually-assigned semantic cluster vectors.
 ///
 /// Used when no real embedding provider is configured (fast, deterministic).
-/// Vectors are 5-dimensional: [animals, programming, database, general, unrelated].
-/// The 5th "unrelated" dimension is orthogonal to all topic clusters, ensuring
-/// that queries about unrelated topics (quantum physics, medieval history) have
-/// zero cosine similarity with any stored memory.
+/// The first 5 dimensions are semantic:
+/// [animals, programming, database, general, unrelated]. The 5th "unrelated"
+/// dimension is orthogonal to all topic clusters, ensuring that queries about
+/// unrelated topics (quantum physics, medieval history) have zero cosine
+/// similarity with any stored memory.
 /// Cosine similarity between cluster members ≈ 0.95-0.99.
+///
+/// Texts with no cluster keyword hash into one of [_hashBuckets] extra
+/// dimensions plus a small shared "general" component. Two distinct
+/// unknown texts therefore score cosine ≈ 0.09 against each other —
+/// mimicking a real model's noise floor — instead of the 1.0 a single
+/// shared default vector would produce (which no real model does).
 class EvalEmbeddingProvider implements EmbeddingProvider {
   static const _vectors = <String, List<double>>{
     // Animal cluster
@@ -44,22 +51,63 @@ class EvalEmbeddingProvider implements EmbeddingProvider {
     'medieval history': [0.0, 0.0, 0.0, 0.0, 1.0],
   };
 
+  static const int _hashBuckets = 16;
+
   @override
-  int get dimensions => 5;
+  int get dimensions => 5 + _hashBuckets;
 
   @override
   Future<List<double>> embed(String text) async {
     // Exact match.
-    if (_vectors.containsKey(text)) return _vectors[text]!;
-    // Substring match (case-insensitive).
+    if (_vectors.containsKey(text)) return _pad(_vectors[text]!);
+
+    // Average ALL matching cluster vectors: text touching multiple topics
+    // ("knows Dart but new to SQLite") lands between clusters, exactly as
+    // real embedding models place multi-topic text.
     final lower = text.toLowerCase();
+    final matches = <List<double>>[];
     for (final entry in _vectors.entries) {
       if (lower.contains(entry.key.toLowerCase())) {
-        return entry.value;
+        matches.add(entry.value);
       }
     }
-    // Default: general cluster (orthogonal to unrelated).
-    return [0.0, 0.0, 0.0, 1.0, 0.0];
+    if (matches.isNotEmpty) {
+      final avg = List.filled(5, 0.0);
+      for (final m in matches) {
+        for (var i = 0; i < 5; i++) {
+          avg[i] += m[i] / matches.length;
+        }
+      }
+      return _pad(avg);
+    }
+
+    // Unknown text: small general component + a two-dimension hash
+    // signature, so distinct unknown texts get distinct near-orthogonal
+    // vectors (~0.09 cosine — a realistic noise floor). Two dimensions
+    // make accidental full collisions rare (~0.4%).
+    final v = List.filled(5 + _hashBuckets, 0.0);
+    v[3] = 0.3;
+    // Two buckets from disjoint bit regions of one hash — appending a
+    // suffix and re-hashing does NOT give an independent second bucket
+    // (FNV's low bits after a fixed suffix are a pure function of the
+    // base residue).
+    final h = _fnv1a(lower);
+    v[5 + (h % _hashBuckets)] += 0.67;
+    v[5 + ((h >> 7) % _hashBuckets)] += 0.67;
+    return v;
+  }
+
+  static List<double> _pad(List<double> v) =>
+      [...v, ...List.filled(_hashBuckets, 0.0)];
+
+  /// FNV-1a — deterministic across VM runs, unlike String.hashCode.
+  static int _fnv1a(String s) {
+    var hash = 0x811c9dc5;
+    for (final unit in s.codeUnits) {
+      hash ^= unit;
+      hash = (hash * 0x01000193) & 0x7fffffff;
+    }
+    return hash;
   }
 }
 

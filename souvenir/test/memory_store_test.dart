@@ -289,6 +289,64 @@ void _memoryStoreTests(Future<MemoryStore> Function() createStore) {
       expect(withEmbeddings.first.embedding, isNotNull);
       expect(withEmbeddings.first.embedding!.length, equals(384));
     });
+
+    test('content update clears stale embedding', () async {
+      final mem = StoredMemory(
+        content: 'User finds rabbits cute',
+        component: 'durable',
+        category: 'fact',
+        embedding: List<double>.generate(384, (i) => i * 0.001),
+      );
+      await store.insert(mem);
+
+      // Merge-style update: content changes, no fresh embedding supplied.
+      await store.update(mem.id, content: 'User adores rabbits and hares');
+
+      final withEmbeddings = await store.loadActiveWithEmbeddings();
+      expect(withEmbeddings, isEmpty,
+          reason: 'stale vector must not survive a content change');
+
+      final unembedded = await store.findUnembeddedMemories();
+      expect(unembedded, hasLength(1));
+      expect(unembedded.first.content, equals('User adores rabbits and hares'));
+    });
+
+    test('content update with fresh embedding keeps the new vector', () async {
+      final mem = StoredMemory(
+        content: 'User finds rabbits cute',
+        component: 'durable',
+        category: 'fact',
+        embedding: List<double>.generate(384, (i) => i * 0.001),
+      );
+      await store.insert(mem);
+
+      final fresh = List<double>.generate(384, (i) => i * 0.002);
+      await store.update(
+        mem.id,
+        content: 'User adores rabbits and hares',
+        embedding: fresh,
+      );
+
+      final withEmbeddings = await store.loadActiveWithEmbeddings();
+      expect(withEmbeddings, hasLength(1));
+      expect(withEmbeddings.first.embedding![1], closeTo(0.002, 1e-6));
+    });
+
+    test('non-content update keeps existing embedding', () async {
+      final mem = StoredMemory(
+        content: 'User finds rabbits cute',
+        component: 'durable',
+        category: 'fact',
+        embedding: List<double>.generate(384, (i) => i * 0.001),
+      );
+      await store.insert(mem);
+
+      await store.update(mem.id, importance: 0.9, entityIds: ['e1']);
+
+      final withEmbeddings = await store.loadActiveWithEmbeddings();
+      expect(withEmbeddings, hasLength(1));
+      expect(withEmbeddings.first.importance, equals(0.9));
+    });
   });
 
   // ── Embeddings ──────────────────────────────────────────────────────
