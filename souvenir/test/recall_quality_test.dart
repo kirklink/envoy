@@ -12,6 +12,7 @@
 ///   (FTS + entity + vector) rank higher than single-signal matches.
 /// - Relevance threshold: irrelevant queries return empty results.
 /// - Component weight tuning: durable facts outrank task context.
+library;
 import 'package:souvenir/src/embedding_provider.dart';
 import 'package:souvenir/src/in_memory_memory_store.dart';
 import 'package:souvenir/src/memory_store.dart';

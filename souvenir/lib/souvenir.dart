@@ -1,4 +1,4 @@
-library souvenir;
+library;
 
 // Engine.
 export 'src/engine.dart';
@@ -15,6 +15,7 @@ export 'src/sqlite_memory_store.dart';
 
 // Core interfaces.
 export 'src/episode_store.dart';
+export 'src/sqlite_episode_store.dart';
 export 'src/memory_component.dart';
 export 'src/tokenizer.dart';
 export 'src/embedding_provider.dart';

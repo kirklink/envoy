@@ -266,7 +266,7 @@ void main() {
     });
 
     test('handles LLM response with markdown code fences', () async {
-      final llm = (String system, String user) async => '''```json
+      Future<String> llm(String system, String user) async => '''```json
 {"items": [{"content": "Fenced response", "category": "context", "importance": 0.5, "action": "new"}]}
 ```''';
 

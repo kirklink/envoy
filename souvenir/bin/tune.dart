@@ -87,7 +87,7 @@ Future<void> main(List<String> args) async {
   }
 
   final elapsed = DateTime.now().difference(startTime).inMilliseconds;
-  print('\r  Done. ${total} runs in ${elapsed}ms (${(elapsed / total).round()}ms each)');
+  print('\r  Done. $total runs in ${elapsed}ms (${(elapsed / total).round()}ms each)');
   print('');
 
   // ── Rank by MRR ──────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@ Future<void> main(List<String> args) async {
     final bestSummary = allResults.first.summary;
     File('eval/tune.md').writeAsStringSync(
       '# Tuning Results\n\n'
-      '**Grid:** fts=${ftsWeights}  vec=$vecWeights  entity=$entityWeights\n'
+      '**Grid:** fts=$ftsWeights  vec=$vecWeights  entity=$entityWeights\n'
       '**Total combinations:** $total\n\n'
       '## Best Config\n\n'
       '```\nfts=${allResults.first.config.ftsWeight}  '

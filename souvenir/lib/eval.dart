@@ -1,7 +1,7 @@
 /// Public API for the Souvenir recall evaluation harness.
 ///
 /// Useful for embedding eval scenarios into tests or other tooling.
-library eval;
+library;
 
 export 'src/eval/report.dart';
 export 'src/eval/runner.dart';

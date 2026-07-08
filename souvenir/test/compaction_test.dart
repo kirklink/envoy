@@ -924,7 +924,7 @@ void main() {
       await durable.initialize();
 
       // Consolidate with empty episodes — only decay runs.
-      final llm = (String s, String u) async => jsonEncode({
+      Future<String> llm(String s, String u) async => jsonEncode({
             'facts': <dynamic>[],
             'relationships': <dynamic>[],
           });
@@ -958,7 +958,7 @@ void main() {
       );
       await durable.initialize();
 
-      final llm = (String s, String u) async => jsonEncode({
+      Future<String> llm(String s, String u) async => jsonEncode({
             'facts': <dynamic>[],
             'relationships': <dynamic>[],
           });
@@ -992,7 +992,7 @@ void main() {
       );
       await durable.initialize();
 
-      final llm = (String s, String u) async => jsonEncode({
+      Future<String> llm(String s, String u) async => jsonEncode({
             'facts': <dynamic>[],
             'relationships': <dynamic>[],
           });
