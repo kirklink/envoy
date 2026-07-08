@@ -98,9 +98,13 @@ class TaskMemory implements MemoryComponent {
     }
 
     // Call LLM for extraction.
+    // The LLM call itself is NOT wrapped: a transport/auth failure must
+    // propagate so the engine leaves the episodes unconsolidated for a
+    // retry. Only a malformed response is swallowed (best-effort
+    // extraction; retrying the same garbage would block consolidation).
+    final response = await llm(_systemPrompt, buffer.toString());
     Map<String, dynamic> extraction;
     try {
-      final response = await llm(_systemPrompt, buffer.toString());
       extraction = _parseJson(response);
     } catch (_) {
       return ConsolidationReport(

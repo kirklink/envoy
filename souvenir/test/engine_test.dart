@@ -8,6 +8,7 @@ import 'package:souvenir/src/memory_store.dart';
 import 'package:souvenir/src/models/episode.dart';
 import 'package:souvenir/src/recall.dart';
 import 'package:souvenir/src/stored_memory.dart';
+import 'package:souvenir/src/task/task_memory.dart';
 import 'package:souvenir/src/tokenizer.dart';
 import 'package:test/test.dart';
 
@@ -290,6 +291,56 @@ void main() {
       await engine.consolidate(_noopLlm);
       expect(engine.bufferSize, 0);
       expect(comp.consolidateCount, 1);
+    });
+
+    test('LLM failure propagates and leaves episodes unconsolidated',
+        () async {
+      final store = InMemoryMemoryStore();
+      final episodeStore = InMemoryEpisodeStore();
+      final engine = Souvenir(
+        components: [TaskMemory(store: store)],
+        store: store,
+        episodeStore: episodeStore,
+      );
+      await engine.initialize();
+
+      await engine.record(_episode('important episode'));
+
+      Future<String> failingLlm(String system, String user) async {
+        throw StateError('API unavailable');
+      }
+
+      await expectLater(
+        engine.consolidate(failingLlm),
+        throwsA(isA<StateError>()),
+        reason: 'a transport/auth failure must not be swallowed',
+      );
+
+      // The episodes survive for a retry — no silent data loss.
+      expect(episodeStore.unconsolidatedCount, 1);
+    });
+
+    test('malformed LLM response is swallowed and episodes consolidate',
+        () async {
+      final store = InMemoryMemoryStore();
+      final episodeStore = InMemoryEpisodeStore();
+      final engine = Souvenir(
+        components: [TaskMemory(store: store)],
+        store: store,
+        episodeStore: episodeStore,
+      );
+      await engine.initialize();
+
+      await engine.record(_episode('some episode'));
+
+      Future<String> garbageLlm(String system, String user) async =>
+          'not json at all';
+
+      final reports = await engine.consolidate(garbageLlm);
+      expect(reports, hasLength(1));
+      expect(reports.first.itemsCreated, 0);
+      expect(episodeStore.unconsolidatedCount, 0,
+          reason: 'garbage extraction is best-effort, not retried forever');
     });
   });
 

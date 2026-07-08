@@ -255,14 +255,12 @@ void main() {
       expect(report.episodesConsumed, 0);
     });
 
-    test('LLM failure returns graceful report', () async {
-      final report = await task.consolidate(
-        [_episode('test')],
-        _failingLlm,
+    test('LLM failure propagates for retry (no silent episode loss)',
+        () async {
+      await expectLater(
+        task.consolidate([_episode('test')], _failingLlm),
+        throwsA(isA<Exception>()),
       );
-
-      expect(report.itemsCreated, 0);
-      expect(report.episodesConsumed, 0);
     });
 
     test('handles LLM response with markdown code fences', () async {
@@ -424,14 +422,12 @@ void main() {
       expect(report.itemsDecayed, 0); // No items to decay
     });
 
-    test('LLM failure returns graceful report with decay', () async {
-      final report = await env.consolidate(
-        [_episode('test')],
-        _failingLlm,
+    test('LLM failure propagates for retry (no silent episode loss)',
+        () async {
+      await expectLater(
+        env.consolidate([_episode('test')], _failingLlm),
+        throwsA(isA<Exception>()),
       );
-
-      expect(report.itemsCreated, 0);
-      expect(report.itemsDecayed, 0);
     });
 
     test('no sessionId on environmental memories', () async {
@@ -789,14 +785,12 @@ void main() {
       expect(report.itemsDecayed, greaterThanOrEqualTo(0));
     });
 
-    test('LLM failure returns graceful report', () async {
-      final report = await durable.consolidate(
-        [_episode('test')],
-        _failingLlm,
+    test('LLM failure propagates for retry (no silent episode loss)',
+        () async {
+      await expectLater(
+        durable.consolidate([_episode('test')], _failingLlm),
+        throwsA(isA<Exception>()),
       );
-
-      expect(report.itemsCreated, 0);
-      expect(report.itemsDecayed, 0);
     });
 
     test('entities created by relationships are persisted', () async {

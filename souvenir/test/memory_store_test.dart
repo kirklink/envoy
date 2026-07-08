@@ -190,6 +190,23 @@ void _memoryStoreTests(Future<MemoryStore> Function() createStore) {
       expect(results, isEmpty);
     });
 
+    test('single-memory corpus still scores usably', () async {
+      // FTS5's BM25 clamps IDF to ~0 when a term appears in every row, so
+      // a fresh store used to return scores of ~1e-6 — below any sane
+      // relevance threshold. The coverage floor must keep matches usable.
+      await store.insert(StoredMemory(
+        content: 'User prefers the Dart language for backend work',
+        component: 'durable',
+        category: 'preference',
+        importance: 0.8,
+      ));
+
+      final results = await store.searchFts('Dart language preference');
+      expect(results, hasLength(1));
+      expect(results.first.score, greaterThan(0.1),
+          reason: 'cold-start matches must survive the relevance threshold');
+    });
+
     test('excludes expired memories', () async {
       await store.insert(StoredMemory(
         content: 'User loves Dart programming',

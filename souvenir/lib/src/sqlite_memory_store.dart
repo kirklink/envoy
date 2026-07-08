@@ -281,12 +281,28 @@ class SqliteMemoryStore implements MemoryStore {
       [sanitized, now, limit],
     );
 
+    final queryTokens = _tokenize(query);
     return result.map((row) {
       final m = Map<String, dynamic>.of(row);
       final bm25 = -(m.remove('rank') as num).toDouble();
-      // Saturate to the [0, 1] absolute-relevance contract of FtsMatch.
-      final score = bm25 > 0 ? bm25 / (bm25 + bm25SaturationK) : 0.0;
-      return FtsMatch(memory: _rowToStoredMemory(m), score: score);
+      final memory = _rowToStoredMemory(m);
+
+      // Two absolute [0, 1] relevance estimates; take the more confident.
+      // BM25 saturation is the richer signal on a populated corpus, but
+      // FTS5 clamps IDF to ~0 when a term appears in every row — on small
+      // corpora (fresh stores) every match scores ~0. Query-token coverage
+      // (matching the in-memory store's semantics) floors that case.
+      final saturated = bm25 > 0 ? bm25 / (bm25 + bm25SaturationK) : 0.0;
+      final contentTokens = _tokenize(memory.content);
+      final overlap = queryTokens.intersection(contentTokens).length;
+      final coverage = queryTokens.isEmpty
+          ? 0.0
+          : (overlap / queryTokens.length) * (8 / (8 + contentTokens.length));
+
+      return FtsMatch(
+        memory: memory,
+        score: saturated > coverage ? saturated : coverage,
+      );
     }).toList();
   }
 
@@ -696,4 +712,14 @@ class SqliteMemoryStore implements MemoryStore {
   }
 
   static const _ftsReserved = {'AND', 'OR', 'NOT', 'NEAR'};
+
+  /// Tokenizes text for coverage scoring — mirrors the in-memory store.
+  static Set<String> _tokenize(String text) {
+    return text
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^\w\s]'), ' ')
+        .split(RegExp(r'\s+'))
+        .where((t) => t.length > 2)
+        .toSet();
+  }
 }
