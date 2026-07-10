@@ -694,9 +694,11 @@ class SqliteMemoryStore implements MemoryStore {
 
   /// Sanitizes an FTS5 query to prevent syntax errors.
   static String _sanitizeFtsQuery(String query) {
-    // Remove FTS5 operators and special characters.
+    // Keep only word characters — anything else (?, :, -, quotes, parens)
+    // is either an FTS5 operator or a bareword syntax error. Natural
+    // questions ("which project is staging on?") must never throw.
     final cleaned = query
-        .replaceAll(RegExp(r'[*"()]'), ' ')
+        .replaceAll(RegExp(r'[^\w\s]'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
     if (cleaned.isEmpty) return '';

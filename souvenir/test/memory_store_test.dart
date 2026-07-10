@@ -190,6 +190,25 @@ void _memoryStoreTests(Future<MemoryStore> Function() createStore) {
       expect(results, isEmpty);
     });
 
+    test('punctuation in natural-language queries never throws', () async {
+      // Question marks, colons, hyphens etc. are FTS5 bareword syntax
+      // errors when passed through MATCH — and real queries are questions.
+      await store.insert(StoredMemory(
+        content: 'The staging database lives on the calm-snow Neon project',
+        component: 'durable',
+        category: 'fact',
+      ));
+
+      final question =
+          await store.searchFts('which Neon project is staging on?');
+      expect(question, isNotEmpty);
+      expect(question.first.memory.content, contains('calm-snow'));
+
+      // Pure punctuation degrades to an empty query, not an exception.
+      final punctuation = await store.searchFts('?!:-');
+      expect(punctuation, isEmpty);
+    });
+
     test('single-memory corpus still scores usably', () async {
       // FTS5's BM25 clamps IDF to ~0 when a term appears in every row, so
       // a fresh store used to return scores of ~1e-6 — below any sane
