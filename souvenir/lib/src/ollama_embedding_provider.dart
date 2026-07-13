@@ -20,6 +20,14 @@ class OllamaEmbeddingProvider implements EmbeddingProvider {
   final Uri _endpoint;
   final HttpClient _client;
 
+  /// Ollama `keep_alive` — how long the model stays loaded after a request.
+  ///
+  /// An `int` is seconds (negative = keep loaded indefinitely); a `String`
+  /// is a Go duration like `'30m'` or `'24h'`. `null` leaves Ollama's own
+  /// default (~5 min), which makes infrequent callers pay a multi-second
+  /// model reload on every cold request.
+  final Object? keepAlive;
+
   @override
   final int dimensions;
 
@@ -32,7 +40,10 @@ class OllamaEmbeddingProvider implements EmbeddingProvider {
     required this.dimensions,
     String baseUrl = 'http://127.0.0.1:11434',
     HttpClient? client,
-  })  : _model = model,
+    this.keepAlive,
+  })  : assert(keepAlive == null || keepAlive is int || keepAlive is String,
+            'keepAlive must be an int (seconds) or a Go duration String'),
+        _model = model,
         _endpoint = Uri.parse('$baseUrl/api/embed'),
         _client = client ?? HttpClient();
 
@@ -40,7 +51,11 @@ class OllamaEmbeddingProvider implements EmbeddingProvider {
   Future<List<double>> embed(String text) async {
     final request = await _client.postUrl(_endpoint);
     request.headers.contentType = ContentType.json;
-    request.write(jsonEncode({'model': _model, 'input': text}));
+    request.write(jsonEncode({
+      'model': _model,
+      'input': text,
+      if (keepAlive != null) 'keep_alive': keepAlive,
+    }));
 
     final response = await request.close();
     if (response.statusCode != 200) {
