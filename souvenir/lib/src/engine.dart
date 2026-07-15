@@ -58,6 +58,9 @@ class Souvenir {
   final List<Episode> _buffer = [];
   bool _initialized = false;
 
+  /// Serializes [consolidate] calls — see its doc comment for why.
+  Future<void> _consolidateLock = Future.value();
+
   /// Creates a Souvenir v3 engine.
   ///
   /// [store] is the shared memory store all components write to.
@@ -118,6 +121,24 @@ class Souvenir {
     await _episodeStore.insert(batch);
   }
 
+  /// Number of episodes awaiting consolidation (buffered + stored) —
+  /// the count signal autonomic consolidation schedules on.
+  int get unconsolidatedEpisodeCount =>
+      _buffer.length + _episodeStore.unconsolidatedCount;
+
+  /// Timestamp of the oldest episode awaiting consolidation (buffered or
+  /// stored), or null when none — the age signal autonomic consolidation
+  /// schedules on.
+  DateTime? get oldestUnconsolidatedAt {
+    var oldest = _episodeStore.oldestUnconsolidatedAt;
+    for (final e in _buffer) {
+      if (oldest == null || e.timestamp.isBefore(oldest)) {
+        oldest = e.timestamp;
+      }
+    }
+    return oldest;
+  }
+
   /// Consolidates unconsolidated episodes across all components.
   ///
   /// 1. Flushes the buffer.
@@ -128,8 +149,22 @@ class Souvenir {
   /// 5. Generates embeddings for any unembedded memories.
   ///
   /// Returns empty list if no unconsolidated episodes exist.
-  Future<List<ConsolidationReport>> consolidate(LlmCallback llm) async {
+  ///
+  /// Concurrent calls are serialized per instance: without the lock, two
+  /// overlapping calls would both fetch the same unconsolidated episodes
+  /// before either marks them, double-processing them into duplicate
+  /// memories. A caller that waited runs against whatever remains
+  /// (usually nothing — a cheap no-op).
+  Future<List<ConsolidationReport>> consolidate(LlmCallback llm) {
     _requireInitialized();
+    final run = _consolidateLock.then((_) => _consolidateInner(llm));
+    // The lock swallows the error so the NEXT caller isn't poisoned by
+    // this one's failure; `run` still surfaces it to this caller.
+    _consolidateLock = run.then((_) {}, onError: (_) {});
+    return run;
+  }
+
+  Future<List<ConsolidationReport>> _consolidateInner(LlmCallback llm) async {
     await flush();
 
     final episodes = await _episodeStore.fetchUnconsolidated();

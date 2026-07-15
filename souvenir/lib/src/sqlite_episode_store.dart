@@ -104,12 +104,22 @@ class SqliteEpisodeStore implements EpisodeStore {
     return result.first['cnt'] as int;
   }
 
-  /// Unconsolidated episode count (observability convenience).
+  @override
   int get unconsolidatedCount {
     final result = _db.select(
       'SELECT COUNT(*) AS cnt FROM $_episodes WHERE consolidated = 0',
     );
     return result.first['cnt'] as int;
+  }
+
+  @override
+  DateTime? get oldestUnconsolidatedAt {
+    final result = _db.select(
+      'SELECT MIN(timestamp) AS oldest FROM $_episodes '
+      'WHERE consolidated = 0',
+    );
+    final oldest = result.first['oldest'] as String?;
+    return oldest == null ? null : DateTime.parse(oldest);
   }
 
   Episode _rowToEpisode(sqlite3.Row row) {

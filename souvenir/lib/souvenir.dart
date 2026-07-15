@@ -2,6 +2,7 @@ library;
 
 // Engine.
 export 'src/engine.dart';
+export 'src/scheduler.dart';
 
 // Unified recall.
 export 'src/recall.dart';

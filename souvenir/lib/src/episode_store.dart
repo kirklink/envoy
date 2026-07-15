@@ -17,6 +17,13 @@ abstract class EpisodeStore {
   /// Physically delete consolidated episodes older than [olderThan].
   /// Returns the number of deleted episodes.
   Future<int> deleteConsolidatedBefore(DateTime olderThan);
+
+  /// Number of episodes not yet consolidated.
+  int get unconsolidatedCount;
+
+  /// Timestamp of the oldest unconsolidated episode, or null when none —
+  /// the age signal autonomic consolidation schedules on.
+  DateTime? get oldestUnconsolidatedAt;
 }
 
 /// In-memory episode store for testing and Phase 1.
@@ -62,7 +69,19 @@ class InMemoryEpisodeStore implements EpisodeStore {
   /// Number of episodes in the store (testing convenience).
   int get length => _episodes.length;
 
-  /// Number of unconsolidated episodes (testing convenience).
+  @override
   int get unconsolidatedCount =>
       _episodes.where((e) => !_consolidatedIds.contains(e.id)).length;
+
+  @override
+  DateTime? get oldestUnconsolidatedAt {
+    DateTime? oldest;
+    for (final e in _episodes) {
+      if (_consolidatedIds.contains(e.id)) continue;
+      if (oldest == null || e.timestamp.isBefore(oldest)) {
+        oldest = e.timestamp;
+      }
+    }
+    return oldest;
+  }
 }
